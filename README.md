@@ -111,7 +111,28 @@ The enrichment pipeline runs in three passes:
 
 **Pass 2: Structured Enrichment** — Using the discovered taxonomy, each event is enriched with: sub-activities (compound event decomposition), people, locations, categories, work depth, mood, productivity, and wasted time flags.
 
-**Pass 3: Vector Embedding** — All sub-activities are embedded using OpenAI's `text-embedding-3-small` model with a selective prose strategy — rich enough for semantic matching, without numeric noise that dilutes signal.
+**Pass 3: Vector Embedding** — All sub-activities are embedded into LanceDB using OpenAI's `text-embedding-3-small` (1536 dimensions).
+
+The key design decision was **what text to embed**. Three tiers were evaluated:
+
+| Tier | Approach | Problem |
+|------|----------|---------|
+| Minimal | Just the activity name | Too sparse — "Work" appears 472 times, all embed identically |
+| Maximal | Full sentence with exact date, time, duration | Noisy — numeric details dilute semantic signal |
+| **Selective prose** | Activity + location + category + sibling context + time band + people + mood | Best of both — rich semantics without noise |
+
+The selective prose approach embeds ~35 tokens per sub-activity. What goes into the embedding text (fuzzy matching) vs. what stays as metadata filters (exact matching):
+
+| Embedded (semantic) | Metadata (filterable) |
+|---------------------|----------------------|
+| Activity name + location | Exact date, year, month |
+| Category label | Exact start hour, duration |
+| Sibling context (before/after activities) | event_id |
+| Time band (morning/afternoon/evening) | is_productive, is_wasted_time |
+| Weekday vs weekend | day_of_week |
+| People names, mood, productivity | |
+
+This dual strategy lets a query like "weekday mornings where I was really locked in" combine metadata filters (`day_of_week NOT IN ('Saturday','Sunday') AND start_hour < 12`) with vector similarity to the concept of "locked in."
 
 Both LLM passes use resume-safe JSON caches, so if the process crashes midway it picks up where it left off.
 
