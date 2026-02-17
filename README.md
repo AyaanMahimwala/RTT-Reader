@@ -119,6 +119,11 @@ Both LLM passes use resume-safe JSON caches, so if the process crashes midway it
 
 Claude learns about you as you chat. Corrections, terminology, relationships, and preferences are saved to persistent memory and included in future conversations. Memories are browsable and deletable from the sidebar.
 
+## Roadmap
+
+- [ ] **Cloud deployment** — Host the app so it's accessible from anywhere, not just localhost
+- [ ] **Real-time calendar sync** — Automatically index new/modified/deleted events so the database stays current without manual ETL reruns
+
 ## Project Structure
 
 | File | Purpose |
