@@ -1,0 +1,12 @@
+.env
+rtt-llm-4bb764de12c7.json
+venv/
+calendar.db
+calendar_vectors/
+calendar_raw_full.csv
+memory.json
+discovery_cache.json
+enrichment_cache.json
+project-notes.md
+.claude/
+__pycache__/
