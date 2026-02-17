@@ -140,6 +140,14 @@ Both LLM passes use resume-safe JSON caches, so if the process crashes midway it
 
 Claude learns about you as you chat. Corrections, terminology, relationships, and preferences are saved to persistent memory and included in future conversations. Memories are browsable and deletable from the sidebar.
 
+## Cost to Build
+
+| Component | Cost |
+|-----------|------|
+| Claude Code (development) | $34.69 |
+| API tokens (ETL + embeddings + per-query) | $16.17 |
+| **Total** | **$50.86** |
+
 ## Roadmap
 
 - [ ] **Cloud deployment** — Host the app so it's accessible from anywhere, not just localhost
