@@ -144,6 +144,7 @@ Claude learns about you as you chat. Corrections, terminology, relationships, an
 
 - [ ] **Cloud deployment** — Host the app so it's accessible from anywhere, not just localhost
 - [ ] **Real-time calendar sync** — Automatically index new/modified/deleted events so the database stays current without manual ETL reruns
+- [ ] **Context usage visualization** — Show how much of Claude's context window is being used by the current conversation (system prompt, schema, memories, chat history)
 
 ## Project Structure
 
