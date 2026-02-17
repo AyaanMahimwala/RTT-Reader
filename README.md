@@ -4,6 +4,8 @@ A natural language interface for querying personal calendar data. Ask questions 
 
 Built with a hybrid SQL + vector search backend — structured queries for quantitative questions, semantic search for vibes-based ones.
 
+![Screenshot](screenshot.png)
+
 ## How It Works
 
 ```
