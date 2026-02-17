@@ -6,6 +6,24 @@ Built with a hybrid SQL + vector search backend — structured queries for quant
 
 ![Screenshot](screenshot.png)
 
+## The Dataset
+
+I meticulously track every activity in my life as Google Calendar events. The ETL pipeline enriched ~20 months of raw calendar data into a structured, queryable database:
+
+- **8,224 events** from May 2024 to February 2026
+- **14,585 sub-activities** decomposed from compound events
+- **253 unique people** extracted across 1,846 person-event links
+- **17 categories** discovered by the LLM from the data itself (not hand-picked)
+
+### Enriched Fields
+
+| Field | Values |
+|-------|--------|
+| **Work depth** | deep (930), shallow (635), meeting (532), medium (111) |
+| **Mood** | positive (2,768), neutral (1,772), negative (253) |
+| **Categories** | commute/transit, routines, social/entertainment, food/dining, deep work, exercise, sleep, and 10 more |
+| **Per event** | people, locations, productivity flag, wasted time flag |
+
 ## How It Works
 
 ```
