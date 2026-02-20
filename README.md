@@ -2,9 +2,11 @@
 
 A natural language interface for querying personal calendar data. Ask questions like "Who did I hang out with the most?" or "When was I in a rut?" and get data-backed conversational answers.
 
-Built with a hybrid SQL + vector search backend — structured queries for quantitative questions, semantic search for vibes-based ones.
+Built with a hybrid SQL + vector search backend — structured queries for quantitative questions, semantic search for vibes-based ones. Also available as a Telegram bot for on-the-go queries.
 
 ![Screenshot](screenshot.png)
+
+![Telegram Bot](telegram-bot-screenshot.PNG)
 
 ## The Dataset
 
