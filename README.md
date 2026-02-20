@@ -79,9 +79,11 @@ Create a `.env` file:
 ```
 CALENDAR_ID=your-calendar-id@gmail.com
 SERVICE_ACCOUNT_FILE=your-service-account.json
-YOUR_TIMEZONE=America/Chicago
+YOUR_TIMEZONE=America/Los_Angeles
 ANTHROPIC_API_KEY=sk-ant-...
 OPENAI_API_KEY=sk-...
+TELEGRAM_BOT_TOKEN=...       # from @BotFather
+TELEGRAM_USER_ID=...         # your numeric ID from @userinfobot
 ```
 
 ### Build the Database
@@ -150,8 +152,10 @@ Claude learns about you as you chat. Corrections, terminology, relationships, an
 
 ## Roadmap
 
-- [ ] **Cloud deployment** — Host the app so it's accessible from anywhere, not just localhost
-- [ ] **Real-time calendar sync** — Automatically index new/modified/deleted events so the database stays current without manual ETL reruns
+- [x] **Telegram bot** — Chat with your calendar data from Telegram via long-polling bot (`/sync` to pull new events, `/new` to reset session)
+- [x] **Incremental calendar sync** — `/sync` fetches the last 7 days from Google Calendar, enriches new events, and upserts into SQLite + LanceDB with per-date stats
+- [x] **Timezone-aware date handling** — System prompt injects current date/time and a mini calendar in the user's timezone; ETL converts all timestamps to local time
+- [ ] **Cloud deployment** — Deploy the Telegram bot to a cloud provider so it runs 24/7 without needing the laptop open
 - [ ] **Context usage visualization** — Show how much of Claude's context window is being used by the current conversation (system prompt, schema, memories, chat history)
 
 ## Project Structure
@@ -159,9 +163,13 @@ Claude learns about you as you chat. Corrections, terminology, relationships, an
 | File | Purpose |
 |------|---------|
 | `data-extract.py` | Google Calendar API → CSV extraction |
-| `etl.py` | Three-pass LLM enrichment + vector store creation |
+| `etl.py` | Three-pass LLM enrichment + vector store creation + upsert helpers |
 | `db.py` | Database helpers, vector search, memory store, Claude tool schemas |
-| `api.py` | FastAPI server with Claude tool_use loop |
+| `agent.py` | Shared agent logic: system prompt, sessions, tool-use loop |
+| `api.py` | FastAPI server — thin wrapper around agent.py |
+| `telegram_bot.py` | Telegram bot interface (long-polling) with /sync and /new commands |
+| `sync.py` | Incremental calendar sync: fetch, enrich, upsert new events |
+| `data_extract.py` | Import shim for `data-extract.py` (hyphen workaround) |
 | `static/index.html` | Single-page chat UI with sidebar |
 | `taxonomy.json` | LLM-discovered category taxonomy |
 | `test_calendar.py` | Original CLI chatbot (date-range queries) |

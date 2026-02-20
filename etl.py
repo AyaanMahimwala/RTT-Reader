@@ -65,8 +65,8 @@ def parse_temporal_fields(event):
         dt_start = datetime.strptime(start_str, "%Y-%m-%d").replace(tzinfo=tz)
         dt_end = datetime.strptime(end_str, "%Y-%m-%d").replace(tzinfo=tz)
     else:
-        dt_start = datetime.fromisoformat(start_str)
-        dt_end = datetime.fromisoformat(end_str)
+        dt_start = datetime.fromisoformat(start_str).astimezone(tz)
+        dt_end = datetime.fromisoformat(end_str).astimezone(tz)
 
     duration = (dt_end - dt_start).total_seconds() / 60.0
 
@@ -523,6 +523,82 @@ def create_database(events, enrichment_cache):
     conn.close()
 
 
+def upsert_events(events, enrichment_cache, event_ids):
+    """Insert new events into existing SQLite database (no drop/recreate).
+
+    Only processes events whose event_id is in event_ids.
+    """
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+
+    inserted = 0
+    for event in events:
+        eid = event["event_id"]
+        if eid not in event_ids:
+            continue
+
+        temporal = parse_temporal_fields(event)
+        enrichment = enrichment_cache.get(eid, {})
+
+        categories = ",".join(enrichment.get("categories", []))
+        people = ",".join(enrichment.get("people", []))
+        locations = ",".join(enrichment.get("locations", []))
+        work_depth = enrichment.get("work_depth")
+        mood = enrichment.get("mood")
+        is_productive = enrichment.get("is_productive", False)
+        is_wasted_time = enrichment.get("is_wasted_time", False)
+
+        c.execute(
+            """INSERT OR REPLACE INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                eid,
+                event["summary"],
+                event["start_dt"],
+                event["end_dt"],
+                temporal["date"],
+                temporal["year"],
+                temporal["month"],
+                temporal["day_of_week"],
+                temporal["start_hour"],
+                temporal["duration_minutes"],
+                categories,
+                people,
+                locations,
+                work_depth,
+                mood,
+                is_productive,
+                is_wasted_time,
+                event.get("description", ""),
+                event.get("location", ""),
+            ),
+        )
+
+        # Insert sub_activities
+        sub_activities = enrichment.get("sub_activities", [event["summary"]])
+        enrichment_categories = enrichment.get("categories", [])
+        primary_category = enrichment_categories[0] if enrichment_categories else None
+
+        for activity in sub_activities:
+            c.execute(
+                "INSERT INTO sub_activities (event_id, activity, category, people) VALUES (?,?,?,?)",
+                (eid, activity, primary_category, people),
+            )
+
+        # Insert event_people (normalized)
+        for person in enrichment.get("people", []):
+            c.execute(
+                "INSERT INTO event_people (event_id, person) VALUES (?,?)",
+                (eid, person),
+            )
+
+        inserted += 1
+
+    conn.commit()
+    conn.close()
+    print(f"Upserted {inserted} events into {DB_FILE}")
+    return inserted
+
+
 # ──────────────────────────────────────────────
 # Vector Store (LanceDB)
 # ──────────────────────────────────────────────
@@ -692,6 +768,86 @@ def create_vector_store(events, enrichment_cache):
 
     print(f"\n  Vector store created: {VECTOR_DIR}/")
     print(f"  Table: sub_activities ({len(records)} rows, {len(all_vectors[0])} dimensions)")
+
+
+def upsert_vectors(events, enrichment_cache, event_ids):
+    """Embed and append new sub-activities to existing LanceDB table.
+
+    Only processes events whose event_id is in event_ids.
+    """
+    # Build records for new events only
+    records = []
+    for event in events:
+        eid = event["event_id"]
+        if eid not in event_ids:
+            continue
+
+        enrichment = enrichment_cache.get(eid, {})
+        temporal = parse_temporal_fields(event)
+        sub_activities = enrichment.get("sub_activities", [event["summary"]])
+        categories = enrichment.get("categories", [])
+        primary_category = categories[0] if categories else ""
+
+        for idx, activity in enumerate(sub_activities):
+            text = construct_embedding_text(
+                activity, idx, sub_activities, event, enrichment, temporal
+            )
+            records.append({
+                "text": text,
+                "event_id": eid,
+                "activity": activity,
+                "parent_summary": event["summary"],
+                "category": primary_category,
+                "categories": ",".join(categories),
+                "date": temporal["date"],
+                "year": temporal["year"],
+                "month": temporal["month"],
+                "day_of_week": temporal["day_of_week"],
+                "start_hour": temporal["start_hour"],
+                "duration_minutes": temporal["duration_minutes"],
+                "people": ",".join(enrichment.get("people", [])),
+                "locations": ",".join(enrichment.get("locations", [])),
+                "mood": enrichment.get("mood") or "",
+                "work_depth": enrichment.get("work_depth") or "",
+                "is_productive": bool(enrichment.get("is_productive", False)),
+                "is_wasted_time": bool(enrichment.get("is_wasted_time", False)),
+            })
+
+    if not records:
+        print("No new sub-activities to embed.")
+        return 0
+
+    print(f"Embedding {len(records)} new sub-activity records...")
+
+    # Embed in batches of 100
+    batch_size = 100
+    all_vectors = []
+    total_batches = (len(records) + batch_size - 1) // batch_size
+
+    for i in range(0, len(records), batch_size):
+        batch = records[i : i + batch_size]
+        batch_num = i // batch_size + 1
+        texts = [r["text"] for r in batch]
+
+        print(f"  Embedding batch {batch_num}/{total_batches}...", end=" ", flush=True)
+        vectors = embed_batch(texts)
+        all_vectors.extend(vectors)
+        print("done")
+
+        if batch_num < total_batches:
+            time.sleep(0.1)
+
+    # Attach vectors to records
+    for record, vector in zip(records, all_vectors):
+        record["vector"] = vector
+
+    # Append to existing LanceDB table
+    db = lancedb.connect(VECTOR_DIR)
+    table = db.open_table("sub_activities")
+    table.add(records)
+
+    print(f"Added {len(records)} vectors to LanceDB")
+    return len(records)
 
 
 # ──────────────────────────────────────────────

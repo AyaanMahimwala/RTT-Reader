@@ -4,3 +4,4 @@ uvicorn
 python-dotenv
 lancedb
 openai
+python-telegram-bot

@@ -40,6 +40,12 @@ def _get_vector_table():
     return _vector_table
 
 
+def invalidate_vector_cache():
+    """Reset the vector table singleton so LanceDB picks up newly added rows."""
+    global _vector_table
+    _vector_table = None
+
+
 def _embed_query(text):
     """Embed a single query string."""
     response = _get_openai().embeddings.create(model=EMBEDDING_MODEL, input=[text])
