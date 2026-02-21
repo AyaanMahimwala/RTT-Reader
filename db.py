@@ -15,10 +15,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DB_FILE = os.path.join(os.path.dirname(__file__), "calendar.db")
-TAXONOMY_FILE = os.path.join(os.path.dirname(__file__), "taxonomy.json")
-VECTOR_DIR = os.path.join(os.path.dirname(__file__), "calendar_vectors")
-MEMORY_FILE = os.path.join(os.path.dirname(__file__), "memory.json")
+_DATA_DIR = os.getenv("DATA_DIR", os.path.dirname(__file__))
+DB_FILE = os.path.join(_DATA_DIR, "calendar.db")
+TAXONOMY_FILE = os.path.join(_DATA_DIR, "taxonomy.json")
+VECTOR_DIR = os.path.join(_DATA_DIR, "calendar_vectors")
+MEMORY_FILE = os.path.join(_DATA_DIR, "memory.json")
 EMBEDDING_MODEL = "text-embedding-3-small"
 
 _openai_client = None

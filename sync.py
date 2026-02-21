@@ -16,11 +16,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DB_FILE = os.path.join(os.path.dirname(__file__), "calendar.db")
-CSV_FILE = os.path.join(os.path.dirname(__file__), "calendar_raw_full.csv")
-TAXONOMY_FILE = os.path.join(os.path.dirname(__file__), "taxonomy.json")
-ENRICHMENT_CACHE = os.path.join(os.path.dirname(__file__), "enrichment_cache.json")
-DISCOVERY_CACHE = os.path.join(os.path.dirname(__file__), "discovery_cache.json")
+_DATA_DIR = os.getenv("DATA_DIR", os.path.dirname(__file__))
+DB_FILE = os.path.join(_DATA_DIR, "calendar.db")
+CSV_FILE = os.path.join(_DATA_DIR, "calendar_raw_full.csv")
+TAXONOMY_FILE = os.path.join(_DATA_DIR, "taxonomy.json")
+ENRICHMENT_CACHE = os.path.join(_DATA_DIR, "enrichment_cache.json")
+DISCOVERY_CACHE = os.path.join(_DATA_DIR, "discovery_cache.json")
 
 
 def sync_calendar() -> str:
@@ -45,7 +46,7 @@ def sync_calendar() -> str:
 
     # 2. Fetch recent events from Google Calendar
     raw_events = get_raw_calendar_data(sync_from)
-    print(f"Fetched {len(raw_events)} events from Google Calendar since {latest_date}")
+    print(f"Fetched {len(raw_events)} events from Google Calendar since {sync_from}")
 
     # 3. Convert to CSV-row dicts and find truly new event_ids
     fetched = []

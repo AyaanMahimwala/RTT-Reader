@@ -10,3 +10,4 @@ enrichment_cache.json
 project-notes.md
 .claude/
 __pycache__/
+instructions.md

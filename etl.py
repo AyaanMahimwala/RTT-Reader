@@ -26,12 +26,13 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 YOUR_TIMEZONE = os.getenv("YOUR_TIMEZONE", "America/Chicago")
 
-CSV_FILE = "calendar_raw_full.csv"
-DB_FILE = "calendar.db"
-DISCOVERY_CACHE = "discovery_cache.json"
-TAXONOMY_FILE = "taxonomy.json"
-ENRICHMENT_CACHE = "enrichment_cache.json"
-VECTOR_DIR = "calendar_vectors"
+_DATA_DIR = os.getenv("DATA_DIR", os.path.dirname(__file__))
+CSV_FILE = os.path.join(_DATA_DIR, "calendar_raw_full.csv")
+DB_FILE = os.path.join(_DATA_DIR, "calendar.db")
+DISCOVERY_CACHE = os.path.join(_DATA_DIR, "discovery_cache.json")
+TAXONOMY_FILE = os.path.join(_DATA_DIR, "taxonomy.json")
+ENRICHMENT_CACHE = os.path.join(_DATA_DIR, "enrichment_cache.json")
+VECTOR_DIR = os.path.join(_DATA_DIR, "calendar_vectors")
 EMBEDDING_MODEL = "text-embedding-3-small"
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
