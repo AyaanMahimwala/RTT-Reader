@@ -2,10 +2,5 @@ venv/
 __pycache__/
 *.pyc
 .env
-*.db
-*.json
-!taxonomy.json
-calendar_vectors/
-*.csv
-service_account.json
 .git/
+data/
