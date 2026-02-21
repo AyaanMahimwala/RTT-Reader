@@ -40,9 +40,14 @@ Google Calendar → data-extract.py → calendar_raw_full.csv
                               │                       │
                               └───────────┬───────────┘
                                           │
-                                       api.py (FastAPI + Claude tool_use)
+                                       agent.py (Claude tool_use loop)
                                           │
-                                   static/index.html (Chat UI)
+                                   ┌──────┴──────┐
+                                   │             │
+                            api.py          telegram_bot.py
+                         (FastAPI)          (long-polling)
+                               │
+                        static/index.html
 ```
 
 1. **Extract** — Pull all events from Google Calendar via service account
@@ -157,8 +162,35 @@ Claude learns about you as you chat. Corrections, terminology, relationships, an
 - [x] **Telegram bot** — Chat with your calendar data from Telegram via long-polling bot (`/sync` to pull new events, `/new` to reset session)
 - [x] **Incremental calendar sync** — `/sync` fetches the last 7 days from Google Calendar, enriches new events, and upserts into SQLite + LanceDB with per-date stats
 - [x] **Timezone-aware date handling** — System prompt injects current date/time and a mini calendar in the user's timezone; ETL converts all timestamps to local time
-- [ ] **Cloud deployment** — Deploy the Telegram bot to a cloud provider so it runs 24/7 without needing the laptop open
+- [x] **Cloud deployment** — Telegram bot deployed to Railway with Docker, persistent volume for data, and GitHub-based auto-deploys
 - [ ] **Context usage visualization** — Show how much of Claude's context window is being used by the current conversation (system prompt, schema, memories, chat history)
+
+## Deployment (Railway)
+
+The Telegram bot runs 24/7 on [Railway](https://railway.app) with a persistent volume for the database and vector store.
+
+**Architecture:**
+- Docker container running `seed.py` (one-time volume init) then `telegram_bot.py`
+- Persistent volume mounted at `/data` holds `calendar.db`, `calendar_vectors/`, caches, and memory
+- GitHub-based auto-deploys on push to `main`
+
+**Required environment variables on Railway:**
+```
+DATA_DIR=/data
+ANTHROPIC_API_KEY=...
+OPENAI_API_KEY=...
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_USER_ID=...
+CALENDAR_ID=...
+SERVICE_ACCOUNT_FILE=/data/service_account.json
+YOUR_TIMEZONE=America/Los_Angeles
+```
+
+**Initial setup:**
+1. Create a Railway project with a persistent volume mounted at `/data`
+2. Set environment variables above
+3. Run `railway up` once from local to seed the volume with data files
+4. Reconnect the project to GitHub for automatic deploys
 
 ## Project Structure
 
@@ -176,4 +208,7 @@ Claude learns about you as you chat. Corrections, terminology, relationships, an
 | `taxonomy.json` | LLM-discovered category taxonomy |
 | `test_calendar.py` | Original CLI chatbot (date-range queries) |
 | `verify.py` | Quick database verification script |
+| `seed.py` | One-time volume seeder: copies bundled data to persistent storage |
+| `Dockerfile` | Production container (Python 3.11-slim) |
+| `railway.toml` | Railway build/deploy configuration |
 | `requirements.txt` | Python dependencies |
