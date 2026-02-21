@@ -3,7 +3,7 @@
 import os
 import shutil
 
-DATA_DIR = os.getenv("DATA_DIR", "/data")
+DATA_DIR = os.getenv("DATA_DIR", os.path.dirname(__file__) or ".")
 SEED_DIR = "/app/seed_data"
 
 
