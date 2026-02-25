@@ -1,6 +1,9 @@
 """
 Database helpers and Claude tool definitions for the calendar query API.
 Includes both SQLite (structured queries) and LanceDB (semantic search).
+
+All functions accept an optional `data_dir` parameter for multi-user support.
+When data_dir is None, the default DATA_DIR is used (backward compatible).
 """
 
 import json
@@ -23,7 +26,23 @@ MEMORY_FILE = os.path.join(_DATA_DIR, "memory.json")
 EMBEDDING_MODEL = "text-embedding-3-small"
 
 _openai_client = None
-_vector_table = None
+_vector_tables: dict[str, object] = {}  # vector_dir_path → LanceDB table
+
+
+def _db_path(data_dir=None):
+    return os.path.join(data_dir, "calendar.db") if data_dir else DB_FILE
+
+
+def _vector_dir(data_dir=None):
+    return os.path.join(data_dir, "calendar_vectors") if data_dir else VECTOR_DIR
+
+
+def _memory_path(data_dir=None):
+    return os.path.join(data_dir, "memory.json") if data_dir else MEMORY_FILE
+
+
+def _taxonomy_path(data_dir=None):
+    return os.path.join(data_dir, "taxonomy.json") if data_dir else TAXONOMY_FILE
 
 
 def _get_openai():
@@ -33,18 +52,18 @@ def _get_openai():
     return _openai_client
 
 
-def _get_vector_table():
-    global _vector_table
-    if _vector_table is None:
-        db = lancedb.connect(VECTOR_DIR)
-        _vector_table = db.open_table("sub_activities")
-    return _vector_table
+def _get_vector_table(data_dir=None):
+    vdir = _vector_dir(data_dir)
+    if vdir not in _vector_tables:
+        db = lancedb.connect(vdir)
+        _vector_tables[vdir] = db.open_table("sub_activities")
+    return _vector_tables[vdir]
 
 
-def invalidate_vector_cache():
+def invalidate_vector_cache(data_dir=None):
     """Reset the vector table singleton so LanceDB picks up newly added rows."""
-    global _vector_table
-    _vector_table = None
+    vdir = _vector_dir(data_dir)
+    _vector_tables.pop(vdir, None)
 
 
 def _embed_query(text):
@@ -53,15 +72,15 @@ def _embed_query(text):
     return response.data[0].embedding
 
 
-def get_connection():
-    conn = sqlite3.connect(DB_FILE)
+def get_connection(data_dir=None):
+    conn = sqlite3.connect(_db_path(data_dir))
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def run_sql(query, max_rows=200):
+def run_sql(query, max_rows=200, data_dir=None):
     """Execute a read-only SQL query and return results as list of dicts."""
-    conn = get_connection()
+    conn = get_connection(data_dir)
     try:
         cursor = conn.execute(query)
         columns = [desc[0] for desc in cursor.description] if cursor.description else []
@@ -71,9 +90,9 @@ def run_sql(query, max_rows=200):
         conn.close()
 
 
-def get_schema():
+def get_schema(data_dir=None):
     """Return CREATE TABLE statements, column descriptions, and category taxonomy."""
-    conn = get_connection()
+    conn = get_connection(data_dir)
     try:
         cursor = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' ORDER BY name")
         schemas = [row[0] for row in cursor.fetchall() if row[0]]
@@ -107,8 +126,9 @@ def get_schema():
     }
 
     taxonomy_info = ""
-    if os.path.exists(TAXONOMY_FILE):
-        with open(TAXONOMY_FILE) as f:
+    tax_file = _taxonomy_path(data_dir)
+    if os.path.exists(tax_file):
+        with open(tax_file) as f:
             taxonomy = json.load(f)
         cats = []
         for cat in taxonomy.get("categories", []):
@@ -126,14 +146,14 @@ def get_schema():
     )
 
 
-def get_sample_rows(n=10):
+def get_sample_rows(n=10, data_dir=None):
     """Return n sample rows from the events table with all fields."""
-    return run_sql(f"SELECT * FROM events ORDER BY RANDOM() LIMIT {n}")
+    return run_sql(f"SELECT * FROM events ORDER BY RANDOM() LIMIT {n}", data_dir=data_dir)
 
 
-def get_category_distribution():
+def get_category_distribution(data_dir=None):
     """Show how many events use each category."""
-    conn = get_connection()
+    conn = get_connection(data_dir)
     try:
         cursor = conn.execute("SELECT categories FROM events WHERE categories != ''")
         counts = {}
@@ -147,11 +167,12 @@ def get_category_distribution():
         conn.close()
 
 
-def get_people_frequency():
+def get_people_frequency(data_dir=None):
     """Show all people and their event counts."""
     return run_sql(
         "SELECT person, COUNT(*) as event_count FROM event_people "
-        "GROUP BY person ORDER BY event_count DESC"
+        "GROUP BY person ORDER BY event_count DESC",
+        data_dir=data_dir,
     )
 
 
@@ -159,9 +180,9 @@ def get_people_frequency():
 # Vector Search Functions
 # ──────────────────────────────────────────────
 
-def semantic_search(query, n=20, filters=None):
+def semantic_search(query, n=20, filters=None, data_dir=None):
     """Search sub-activities by semantic similarity. Returns top N matches."""
-    table = _get_vector_table()
+    table = _get_vector_table(data_dir)
     query_vector = _embed_query(query)
 
     search = table.search(query_vector).limit(n)
@@ -214,9 +235,9 @@ def semantic_search(query, n=20, filters=None):
     return formatted
 
 
-def find_similar_events(event_id, n=10):
+def find_similar_events(event_id, n=10, data_dir=None):
     """Find sub-activities most similar to a given event's sub-activities."""
-    table = _get_vector_table()
+    table = _get_vector_table(data_dir)
 
     # Get the vectors for this event's sub-activities
     event_rows = table.search().where(f"event_id = '{event_id}'").limit(100).to_list()
@@ -262,23 +283,25 @@ MEMORY_CATEGORIES = [
 ]
 
 
-def _load_memories():
+def _load_memories(data_dir=None):
     """Read memory.json or return empty structure."""
-    if os.path.exists(MEMORY_FILE):
-        with open(MEMORY_FILE) as f:
+    path = _memory_path(data_dir)
+    if os.path.exists(path):
+        with open(path) as f:
             return json.load(f)
     return {"memories": []}
 
 
-def _save_memories(data):
+def _save_memories(data, data_dir=None):
     """Write memory.json."""
-    with open(MEMORY_FILE, "w") as f:
+    path = _memory_path(data_dir)
+    with open(path, "w") as f:
         json.dump(data, f, indent=2)
 
 
-def save_memory(text, category, tags=None):
+def save_memory(text, category, tags=None, data_dir=None):
     """Append a new memory and return confirmation."""
-    data = _load_memories()
+    data = _load_memories(data_dir)
     memory_id = "m_" + uuid.uuid4().hex[:6]
     memory = {
         "id": memory_id,
@@ -288,13 +311,13 @@ def save_memory(text, category, tags=None):
         "created_at": datetime.now().isoformat(),
     }
     data["memories"].append(memory)
-    _save_memories(data)
+    _save_memories(data, data_dir)
     return {"status": "saved", "id": memory_id}
 
 
-def search_memories(query):
+def search_memories(query, data_dir=None):
     """Case-insensitive match against text and tags."""
-    data = _load_memories()
+    data = _load_memories(data_dir)
     query_lower = query.lower()
     results = []
     for m in data["memories"]:
@@ -305,23 +328,47 @@ def search_memories(query):
     return results
 
 
-def list_memories(category=None):
+def list_memories(category=None, data_dir=None):
     """Return all memories, optionally filtered by category."""
-    data = _load_memories()
+    data = _load_memories(data_dir)
     if category:
         return [m for m in data["memories"] if m["category"] == category]
     return data["memories"]
 
 
-def delete_memory(memory_id):
+def delete_memory(memory_id, data_dir=None):
     """Delete a memory by id. Returns True if found and deleted, False otherwise."""
-    data = _load_memories()
+    data = _load_memories(data_dir)
     original_len = len(data["memories"])
     data["memories"] = [m for m in data["memories"] if m["id"] != memory_id]
     if len(data["memories"]) < original_len:
-        _save_memories(data)
+        _save_memories(data, data_dir)
         return True
     return False
+
+
+# ──────────────────────────────────────────────
+# Data Stats (for dynamic system prompt)
+# ──────────────────────────────────────────────
+
+def get_data_stats(data_dir=None):
+    """Get event count, sub-activity count, date range, and people count."""
+    try:
+        conn = get_connection(data_dir)
+        event_count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        sub_count = conn.execute("SELECT COUNT(*) FROM sub_activities").fetchone()[0]
+        date_range = conn.execute("SELECT MIN(date), MAX(date) FROM events").fetchone()
+        people_count = conn.execute("SELECT COUNT(DISTINCT person) FROM event_people").fetchone()[0]
+        conn.close()
+        return {
+            "event_count": event_count,
+            "sub_activity_count": sub_count,
+            "date_min": date_range[0] or "unknown",
+            "date_max": date_range[1] or "unknown",
+            "unique_people": people_count,
+        }
+    except Exception:
+        return None
 
 
 # ──────────────────────────────────────────────
@@ -526,39 +573,42 @@ TOOLS = [
 ]
 
 
-def execute_tool(tool_name, tool_input):
+def execute_tool(tool_name, tool_input, data_dir=None):
     """Execute a tool by name and return the result as a string."""
     if tool_name == "run_sql":
-        result = run_sql(tool_input["query"])
+        result = run_sql(tool_input["query"], data_dir=data_dir)
     elif tool_name == "get_schema":
-        result = get_schema()
+        result = get_schema(data_dir)
     elif tool_name == "get_sample_rows":
-        result = get_sample_rows(tool_input.get("n", 10))
+        result = get_sample_rows(tool_input.get("n", 10), data_dir=data_dir)
     elif tool_name == "get_category_distribution":
-        result = get_category_distribution()
+        result = get_category_distribution(data_dir)
     elif tool_name == "get_people_frequency":
-        result = get_people_frequency()
+        result = get_people_frequency(data_dir)
     elif tool_name == "semantic_search":
         result = semantic_search(
             tool_input["query"],
             tool_input.get("n", 20),
             tool_input.get("filters"),
+            data_dir=data_dir,
         )
     elif tool_name == "find_similar_events":
         result = find_similar_events(
             tool_input["event_id"],
             tool_input.get("n", 10),
+            data_dir=data_dir,
         )
     elif tool_name == "save_memory":
         result = save_memory(
             tool_input["text"],
             tool_input["category"],
             tool_input.get("tags"),
+            data_dir=data_dir,
         )
     elif tool_name == "search_memories":
-        result = search_memories(tool_input["query"])
+        result = search_memories(tool_input["query"], data_dir=data_dir)
     elif tool_name == "list_memories":
-        result = list_memories(tool_input.get("category"))
+        result = list_memories(tool_input.get("category"), data_dir=data_dir)
     else:
         return json.dumps({"error": f"Unknown tool: {tool_name}"})
 

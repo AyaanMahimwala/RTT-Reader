@@ -2,6 +2,9 @@
 Shared agent logic: Anthropic client, session management, system prompt, tool-use loop.
 
 Used by both api.py (FastAPI) and telegram_bot.py (Telegram).
+
+All query functions accept an optional `data_dir` parameter for multi-user support.
+When data_dir is None, the default DATA_DIR is used (backward compatible).
 """
 
 import json
@@ -15,7 +18,7 @@ from zoneinfo import ZoneInfo
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
-from db import TOOLS, execute_tool, get_schema, list_memories
+from db import TOOLS, execute_tool, get_schema, list_memories, get_data_stats
 
 load_dotenv()
 
@@ -24,15 +27,19 @@ SONNET_MODEL = "claude-sonnet-4-20250514"
 
 client = Anthropic(api_key=ANTHROPIC_API_KEY)
 
-# Pre-load schema for the system prompt
-_schema_cache = None
+# Per-user schema cache: data_dir (or None) → schema text
+_schema_cache: Dict[Optional[str], str] = {}
 
 
-def _get_schema_text():
-    global _schema_cache
-    if _schema_cache is None:
-        _schema_cache = get_schema()
-    return _schema_cache
+def _get_schema_text(data_dir=None):
+    if data_dir not in _schema_cache:
+        _schema_cache[data_dir] = get_schema(data_dir)
+    return _schema_cache[data_dir]
+
+
+def invalidate_schema_cache(data_dir=None):
+    """Clear cached schema for a user (e.g. after ETL completes)."""
+    _schema_cache.pop(data_dir, None)
 
 
 # ──────────────────────────────────────────────
@@ -75,7 +82,7 @@ def reset_session(session_id: str) -> None:
 # Memory-Aware System Prompt
 # ──────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are a personal calendar analyst. The user meticulously tracks every activity in their life as calendar events. You have access to a SQLite database of ~8,224 events from May 2024 to February 2026, enriched with structured fields, AND a vector store of ~14,585 sub-activities for semantic search.
+SYSTEM_PROMPT_TEMPLATE = """You are a personal calendar analyst. The user meticulously tracks every activity in their life as calendar events. You have access to a SQLite database of {event_count} events from {date_min} to {date_max}, enriched with structured fields, AND a vector store of {sub_activity_count} sub-activities for semantic search.
 
 YOU HAVE TWO SEARCH MODALITIES:
 
@@ -125,9 +132,9 @@ GENERAL:
 - For time-based analysis, use year, month, day_of_week, start_hour as needed."""
 
 
-def _get_memory_prompt():
+def _get_memory_prompt(data_dir=None):
     """Load all memories, group by category, format as bullet lists."""
-    memories = list_memories()
+    memories = list_memories(data_dir=data_dir)
     if not memories:
         return ""
 
@@ -175,17 +182,35 @@ def _mini_calendar(now: datetime) -> str:
     return "\n".join(lines)
 
 
-def _build_system_prompt():
-    """Build the full system prompt with schema and memories."""
+def _build_system_prompt(data_dir=None):
+    """Build the full system prompt with schema, memories, and dynamic stats."""
     tz_name = os.getenv("YOUR_TIMEZONE", "America/Los_Angeles")
     now = datetime.now(ZoneInfo(tz_name))
     date_str = now.strftime("%A, %B %d, %Y %I:%M %p")
+
+    # Get dynamic stats for this user's database
+    stats = get_data_stats(data_dir)
+    if stats:
+        system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
+            event_count=f"~{stats['event_count']:,}",
+            sub_activity_count=f"~{stats['sub_activity_count']:,}",
+            date_min=stats["date_min"],
+            date_max=stats["date_max"],
+        )
+    else:
+        system_prompt = SYSTEM_PROMPT_TEMPLATE.format(
+            event_count="your",
+            sub_activity_count="your",
+            date_min="the earliest date",
+            date_max="the latest date",
+        )
+
     return (
-        SYSTEM_PROMPT
+        system_prompt
         + f"\n\nCURRENT DATE: {date_str} ({tz_name})"
         + "\n\n" + _mini_calendar(now)
-        + "\n\nDATABASE SCHEMA:\n" + _get_schema_text()
-        + _get_memory_prompt()
+        + "\n\nDATABASE SCHEMA:\n" + _get_schema_text(data_dir)
+        + _get_memory_prompt(data_dir)
     )
 
 
@@ -193,7 +218,7 @@ def _build_system_prompt():
 # Core Agent Loop
 # ──────────────────────────────────────────────
 
-def run_agent(question: str, session_id: Optional[str] = None) -> dict:
+def run_agent(question: str, session_id: Optional[str] = None, data_dir: Optional[str] = None) -> dict:
     """Run the agent tool-use loop and return structured result.
 
     Returns {"answer": str, "sql_queries": list, "data": list, "session_id": str}
@@ -204,8 +229,8 @@ def run_agent(question: str, session_id: Optional[str] = None) -> dict:
     # Get or create session
     session_id, session_messages = _get_or_create_session(session_id)
 
-    # Build dynamic system prompt with schema + memories
-    system = _build_system_prompt()
+    # Build dynamic system prompt with schema + memories for this user
+    system = _build_system_prompt(data_dir)
 
     # Append the new user message to session history
     question = (question or "").strip() or "hi"
@@ -240,9 +265,9 @@ def run_agent(question: str, session_id: Optional[str] = None) -> dict:
                     if tool_name == "run_sql" and "query" in tool_input:
                         sql_queries.append(tool_input["query"])
 
-                    # Execute the tool
+                    # Execute the tool with user-specific data_dir
                     try:
-                        result = execute_tool(tool_name, tool_input)
+                        result = execute_tool(tool_name, tool_input, data_dir=data_dir)
                         # Track data from SQL queries
                         if tool_name == "run_sql":
                             try:

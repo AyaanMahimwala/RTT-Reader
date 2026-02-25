@@ -7,6 +7,8 @@ calendar_raw_full.csv
 memory.json
 discovery_cache.json
 enrichment_cache.json
+users.json
+users/
 project-notes.md
 .claude/
 __pycache__/

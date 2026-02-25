@@ -3,6 +3,8 @@ Lightweight on-demand calendar sync.
 
 Fetches only recent events from Google Calendar, diffs against the existing DB,
 enriches new events, and upserts into SQLite + LanceDB.
+
+Accepts an optional data_dir parameter for multi-user support.
 """
 
 import json
@@ -17,18 +19,18 @@ from dotenv import load_dotenv
 load_dotenv()
 
 _DATA_DIR = os.getenv("DATA_DIR", os.path.dirname(__file__))
-DB_FILE = os.path.join(_DATA_DIR, "calendar.db")
-CSV_FILE = os.path.join(_DATA_DIR, "calendar_raw_full.csv")
-TAXONOMY_FILE = os.path.join(_DATA_DIR, "taxonomy.json")
-ENRICHMENT_CACHE = os.path.join(_DATA_DIR, "enrichment_cache.json")
-DISCOVERY_CACHE = os.path.join(_DATA_DIR, "discovery_cache.json")
 
 
-def sync_calendar() -> str:
+def sync_calendar(data_dir=None) -> str:
     """Fetch recent events, enrich new ones, upsert into DB + vectors.
 
     Returns a human-readable status message.
     """
+    d = data_dir or _DATA_DIR
+    db_file = os.path.join(d, "calendar.db")
+    csv_file = os.path.join(d, "calendar_raw_full.csv")
+    taxonomy_file = os.path.join(d, "taxonomy.json")
+
     # Late imports to avoid circular deps and keep startup fast
     from data_extract import get_raw_calendar_data, export_to_csv  # noqa: delayed
     from etl import (
@@ -64,7 +66,7 @@ def sync_calendar() -> str:
         })
 
     # Check which event_ids already exist in the DB
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(db_file)
     existing = set()
     cursor = conn.execute("SELECT event_id FROM events")
     for r in cursor:
@@ -85,7 +87,7 @@ def sync_calendar() -> str:
 
     # 4. Append new events to the CSV (keep it as source of truth)
     import csv
-    with open(CSV_FILE, "a", newline="", encoding="utf-8") as f:
+    with open(csv_file, "a", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         for ev in new_events:
             writer.writerow([
@@ -95,20 +97,20 @@ def sync_calendar() -> str:
 
     # 5. Run Pass 1 (discovery) and Pass 2 (enrichment) on new events only
     #    The caches will skip all previously-enriched events automatically.
-    with open(TAXONOMY_FILE) as f:
+    with open(taxonomy_file) as f:
         taxonomy = json.load(f)
 
-    run_pass1_discovery(new_events)
-    enrichment_cache = run_pass2_enrichment(new_events, taxonomy)
+    run_pass1_discovery(new_events, data_dir=data_dir)
+    enrichment_cache = run_pass2_enrichment(new_events, taxonomy, data_dir=data_dir)
 
     # 6. Upsert into SQLite
-    upsert_events(new_events, enrichment_cache, new_ids)
+    upsert_events(new_events, enrichment_cache, new_ids, data_dir=data_dir)
 
     # 7. Upsert into LanceDB
-    upsert_vectors(new_events, enrichment_cache, new_ids)
+    upsert_vectors(new_events, enrichment_cache, new_ids, data_dir=data_dir)
 
     # 8. Invalidate the vector table cache so queries see the new data
-    invalidate_vector_cache()
+    invalidate_vector_cache(data_dir)
 
     # 9. Build detailed stats
     date_counts = Counter()
