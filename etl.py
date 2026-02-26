@@ -426,7 +426,8 @@ def create_database(events, enrichment_cache, data_dir=None):
             is_productive    BOOLEAN,
             is_wasted_time   BOOLEAN,
             description      TEXT,
-            location_raw     TEXT
+            location_raw     TEXT,
+            last_modified    TEXT
         )
     """)
 
@@ -465,7 +466,7 @@ def create_database(events, enrichment_cache, data_dir=None):
         is_wasted_time = enrichment.get("is_wasted_time", False)
 
         c.execute(
-            """INSERT OR REPLACE INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT OR REPLACE INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 eid,
                 event["summary"],
@@ -486,6 +487,7 @@ def create_database(events, enrichment_cache, data_dir=None):
                 is_wasted_time,
                 event.get("description", ""),
                 event.get("location", ""),
+                event.get("last_modified", ""),
             ),
         )
 
@@ -562,7 +564,7 @@ def upsert_events(events, enrichment_cache, event_ids, data_dir=None):
         is_wasted_time = enrichment.get("is_wasted_time", False)
 
         c.execute(
-            """INSERT OR REPLACE INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT OR REPLACE INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 eid,
                 event["summary"],
@@ -583,8 +585,13 @@ def upsert_events(events, enrichment_cache, event_ids, data_dir=None):
                 is_wasted_time,
                 event.get("description", ""),
                 event.get("location", ""),
+                event.get("last_modified", ""),
             ),
         )
+
+        # For upserts, clear and re-insert sub_activities and event_people
+        c.execute("DELETE FROM sub_activities WHERE event_id = ?", (eid,))
+        c.execute("DELETE FROM event_people WHERE event_id = ?", (eid,))
 
         # Insert sub_activities
         sub_activities = enrichment.get("sub_activities", [event["summary"]])

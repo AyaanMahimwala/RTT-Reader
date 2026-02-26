@@ -28,6 +28,13 @@ def parse_ics_content(content: bytes) -> list[dict]:
         location = str(component.get("location", "") or "")
         status = str(component.get("status", "confirmed") or "confirmed")
 
+        last_modified_prop = component.get("last-modified")
+        if last_modified_prop is not None:
+            lm = last_modified_prop.dt
+            last_modified = lm.isoformat() if isinstance(lm, (date, datetime)) else ""
+        else:
+            last_modified = ""
+
         dtstart = component.get("dtstart")
         dtend = component.get("dtend")
 
@@ -57,6 +64,7 @@ def parse_ics_content(content: bytes) -> list[dict]:
             "description": description,
             "location": location,
             "status": status.lower(),
+            "last_modified": last_modified,
         })
 
     return events
@@ -87,7 +95,7 @@ def events_to_csv(events: list[dict], output_path: str) -> None:
     """Write events to CSV in the format expected by etl.py."""
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["event_id", "summary", "start_dt", "end_dt", "description", "location", "status"])
+        writer.writerow(["event_id", "summary", "start_dt", "end_dt", "description", "location", "status", "last_modified"])
         for ev in events:
             writer.writerow([
                 ev["event_id"],
@@ -97,4 +105,5 @@ def events_to_csv(events: list[dict], output_path: str) -> None:
                 ev["description"],
                 ev["location"],
                 ev["status"],
+                ev.get("last_modified", ""),
             ])

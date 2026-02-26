@@ -44,6 +44,7 @@ def _raw_to_dicts(raw_events: list[dict]) -> list[dict]:
             "description": event.get("description", ""),
             "location": event.get("location", ""),
             "status": event.get("status", ""),
+            "last_modified": event.get("updated", ""),
         })
     return fetched
 
@@ -67,25 +68,66 @@ def _sync_events(raw_events: list[dict], data_dir: str) -> str:
 
     fetched = _raw_to_dicts(raw_events)
 
-    # Check which event_ids already exist in the DB
+    # Check which event_ids already exist in the DB and their last_modified timestamps
     conn = sqlite3.connect(db_file)
-    existing = set()
-    cursor = conn.execute("SELECT event_id FROM events")
-    for r in cursor:
-        existing.add(r[0])
+    existing = {}  # event_id → last_modified
+    try:
+        cursor = conn.execute("SELECT event_id, last_modified FROM events")
+        for r in cursor:
+            existing[r[0]] = r[1] or ""
+    except sqlite3.OperationalError:
+        # last_modified column doesn't exist yet — add it and treat all as new
+        conn.execute("ALTER TABLE events ADD COLUMN last_modified TEXT DEFAULT ''")
+        conn.commit()
+        cursor = conn.execute("SELECT event_id FROM events")
+        for r in cursor:
+            existing[r[0]] = ""
     conn.close()
 
     new_ids = set()
+    changed_ids = set()
     new_events = []
     for ev in fetched:
-        if ev["event_id"] not in existing:
-            new_ids.add(ev["event_id"])
+        eid = ev["event_id"]
+        ev_modified = ev.get("last_modified", "")
+        if eid not in existing:
+            new_ids.add(eid)
+            new_events.append(ev)
+        elif ev_modified and existing[eid] and ev_modified > existing[eid]:
+            changed_ids.add(eid)
             new_events.append(ev)
 
-    if not new_ids:
-        return "Database is up to date — no new events found."
+    all_ids = new_ids | changed_ids
 
-    print(f"Found {len(new_ids)} new events to sync")
+    if not all_ids:
+        return "Database is up to date — no new or updated events found."
+
+    print(f"Found {len(new_ids)} new and {len(changed_ids)} updated events to sync")
+
+    # For changed events, invalidate their enrichment caches so they get re-processed
+    if changed_ids:
+        discovery_cache_file = os.path.join(data_dir, "discovery_cache.json")
+        enrichment_cache_file = os.path.join(data_dir, "enrichment_cache.json")
+        for cache_file in [discovery_cache_file, enrichment_cache_file]:
+            if os.path.exists(cache_file):
+                import json as _json
+                with open(cache_file) as f:
+                    cache = _json.load(f)
+                for eid in changed_ids:
+                    cache.pop(eid, None)
+                with open(cache_file + ".tmp", "w") as f:
+                    _json.dump(cache, f)
+                os.replace(cache_file + ".tmp", cache_file)
+
+        # Delete old vectors for changed events from LanceDB
+        import lancedb as _lancedb
+        vector_dir = os.path.join(data_dir, "calendar_vectors")
+        if os.path.exists(vector_dir):
+            ldb = _lancedb.connect(vector_dir)
+            if "sub_activities" in ldb.table_names():
+                table = ldb.open_table("sub_activities")
+                ids_str = ", ".join(f"'{eid}'" for eid in changed_ids)
+                table.delete(f"event_id IN ({ids_str})")
 
     # Append new events to the CSV
     with open(csv_file, "a", newline="", encoding="utf-8") as f:
@@ -94,16 +136,18 @@ def _sync_events(raw_events: list[dict], data_dir: str) -> str:
             writer.writerow([
                 ev["event_id"], ev["summary"], ev["start_dt"], ev["end_dt"],
                 ev["description"], ev["location"], ev["status"],
+                ev.get("last_modified", ""),
             ])
 
-    # Enrich and upsert
+    # Enrich and upsert new/changed events only
+    # (caches skip already-enriched events automatically)
     with open(taxonomy_file) as f:
         taxonomy = json.load(f)
 
     run_pass1_discovery(new_events, data_dir=data_dir)
     enrichment_cache = run_pass2_enrichment(new_events, taxonomy, data_dir=data_dir)
-    upsert_events(new_events, enrichment_cache, new_ids, data_dir=data_dir)
-    upsert_vectors(new_events, enrichment_cache, new_ids, data_dir=data_dir)
+    upsert_events(new_events, enrichment_cache, all_ids, data_dir=data_dir)
+    upsert_vectors(new_events, enrichment_cache, all_ids, data_dir=data_dir)
     invalidate_vector_cache(data_dir)
 
     # Stats
@@ -112,7 +156,7 @@ def _sync_events(raw_events: list[dict], data_dir: str) -> str:
         fields = parse_temporal_fields(ev)
         date_counts[fields["date"]] += 1
 
-    lines = [f"Synced {len(new_ids)} new events into the database.\n"]
+    lines = [f"Synced {len(new_ids)} new and {len(changed_ids)} updated events into the database.\n"]
     lines.append("New events by date:")
     for date in sorted(date_counts):
         lines.append(f"  {date}: {date_counts[date]} events")

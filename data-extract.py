@@ -100,13 +100,13 @@ def export_to_csv(events, filename):
     with open(filename, mode='w', newline='', encoding='utf-8') as file:
         writer = csv.writer(file)
         # Raw headers for our future brainstorming
-        writer.writerow(['event_id', 'summary', 'start_dt', 'end_dt', 'description', 'location', 'status'])
+        writer.writerow(['event_id', 'summary', 'start_dt', 'end_dt', 'description', 'location', 'status', 'last_modified'])
 
         for event in events:
             # Handle both timed and all-day events
             start = event['start'].get('dateTime', event['start'].get('date'))
             end = event['end'].get('dateTime', event['end'].get('date'))
-            
+
             writer.writerow([
                 event.get('id'),
                 event.get('summary', ''),
@@ -114,7 +114,8 @@ def export_to_csv(events, filename):
                 end,
                 event.get('description', ''),
                 event.get('location', ''),
-                event.get('status', '')
+                event.get('status', ''),
+                event.get('updated', ''),
             ])
 
 if __name__ == "__main__":
