@@ -20,7 +20,6 @@ Environment variables (.env):
 """
 
 import asyncio
-import json
 import os
 import logging
 from datetime import datetime
@@ -37,13 +36,14 @@ from telegram.ext import (
 )
 
 from agent import run_agent, reset_session, invalidate_schema_cache
+from user_registry import (
+    ADMIN_USER_ID, load_users, save_users, get_user, get_user_data_dir,
+    ensure_admin_registered,
+)
 
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-ADMIN_USER_ID = int(os.getenv("TELEGRAM_USER_ID", "0"))
-_DATA_DIR = os.getenv("DATA_DIR", os.path.dirname(__file__))
-USERS_FILE = os.path.join(_DATA_DIR, "users.json")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -53,49 +53,6 @@ logger = logging.getLogger(__name__)
 
 # Map Telegram chat_id → agent session_id
 _chat_sessions: dict[int, str] = {}
-
-
-# ──────────────────────────────────────────────
-# User Registry
-# ──────────────────────────────────────────────
-
-def _load_users() -> dict:
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE) as f:
-            return json.load(f)
-    return {}
-
-
-def _save_users(users: dict) -> None:
-    with open(USERS_FILE, "w") as f:
-        json.dump(users, f, indent=2)
-
-
-def _get_user(user_id: int) -> dict | None:
-    users = _load_users()
-    return users.get(str(user_id))
-
-
-def _get_user_data_dir(user_id: int) -> str:
-    """Admin uses root DATA_DIR (backward compat), others get per-user dirs."""
-    if user_id == ADMIN_USER_ID:
-        return _DATA_DIR
-    return os.path.join(_DATA_DIR, "users", str(user_id))
-
-
-def _ensure_admin_registered():
-    """Auto-register admin user on startup with 'ready' status."""
-    users = _load_users()
-    admin_key = str(ADMIN_USER_ID)
-    if admin_key not in users:
-        users[admin_key] = {
-            "name": "Admin",
-            "status": "ready",
-            "registered_at": datetime.now().isoformat(),
-            "is_admin": True,
-        }
-        _save_users(users)
-        logger.info(f"Auto-registered admin user {ADMIN_USER_ID}")
 
 
 # ──────────────────────────────────────────────
@@ -141,7 +98,7 @@ async def _send_long(update: Update, text: str) -> None:
 # ──────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = _get_user(update.effective_user.id)
+    user = get_user(update.effective_user.id)
     if not user:
         await update.message.reply_text(
             "Welcome to the Calendar Analytics Bot!\n\n"
@@ -157,7 +114,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Commands:\n"
             "/new — start a fresh conversation\n"
             "/status — check your data status\n"
-            + ("/sync — refresh calendar data from Google\n" if user.get("is_admin") else "")
+            "/sync — sync calendar data from Google\n"
         )
     else:
         await update.message.reply_text(
@@ -170,7 +127,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def cmd_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     user_id_str = str(user_id)
-    users = _load_users()
+    users = load_users()
 
     if user_id_str in users:
         await update.message.reply_text(
@@ -179,7 +136,7 @@ async def cmd_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     # Create user entry + data directory
-    data_dir = _get_user_data_dir(user_id)
+    data_dir = get_user_data_dir(user_id)
     os.makedirs(data_dir, exist_ok=True)
 
     users[user_id_str] = {
@@ -188,7 +145,7 @@ async def cmd_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "registered_at": datetime.now().isoformat(),
         "is_admin": False,
     }
-    _save_users(users)
+    save_users(users)
 
     await update.message.reply_text(
         "You're registered! Here's how to get your calendar data:\n\n"
@@ -203,7 +160,7 @@ async def cmd_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = _get_user(update.effective_user.id)
+    user = get_user(update.effective_user.id)
     if not user:
         await update.message.reply_text("You're not registered yet. Send /register to get started.")
         return
@@ -227,7 +184,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         ),
         "ready": (
             f"Hi {name}! Your data is ready. Ask me anything about your calendar!\n\n"
-            "You can also upload a new .zip/.ics file to update your data."
+            "You can also upload a new .zip/.ics file or /sync to update your data."
         ),
         "error": (
             f"Hi {name}! There was an error processing your data.\n"
@@ -235,11 +192,25 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             "Try uploading your calendar file again, then send /process."
         ),
     }
-    await update.message.reply_text(status_messages.get(status, f"Status: {status}"))
+    msg = status_messages.get(status, f"Status: {status}")
+
+    # Show Google Calendar connection status
+    from google_auth import oauth_configured, get_token_path
+    data_dir = get_user_data_dir(update.effective_user.id)
+    if user.get("is_admin") and os.getenv("SERVICE_ACCOUNT_FILE"):
+        msg += "\n\nGoogle Calendar: connected (service account)"
+    elif oauth_configured():
+        token_path = get_token_path(data_dir)
+        if os.path.exists(token_path):
+            msg += "\n\nGoogle Calendar: connected (OAuth)"
+        else:
+            msg += "\n\nGoogle Calendar: not connected — send /sync to link your account"
+
+    await update.message.reply_text(msg)
 
 
 async def cmd_new(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = _get_user(update.effective_user.id)
+    user = get_user(update.effective_user.id)
     if not user:
         return
     chat_id = update.effective_chat.id
@@ -250,31 +221,85 @@ async def cmd_new(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Admin-only: sync calendar data from Google."""
-    user = _get_user(update.effective_user.id)
-    if not user or not user.get("is_admin"):
-        await update.message.reply_text("This command is only available for the admin user.")
+    """Sync calendar data from Google — admin uses service account, others use OAuth."""
+    user_id = update.effective_user.id
+    user = get_user(user_id)
+    if not user:
+        await update.message.reply_text("Please /register first!")
         return
-    await update.message.reply_chat_action(ChatAction.TYPING)
-    try:
-        from sync import sync_calendar
-        result = sync_calendar()
-        await update.message.reply_text(result)
-    except Exception as e:
-        logger.exception("Sync failed")
-        await update.message.reply_text(f"Sync failed: {e}")
+
+    data_dir = get_user_data_dir(user_id)
+
+    # Admin path: use service account (backward compatible)
+    if user.get("is_admin") and os.getenv("SERVICE_ACCOUNT_FILE"):
+        await update.message.reply_chat_action(ChatAction.TYPING)
+        try:
+            from sync import sync_calendar
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, sync_calendar)
+            invalidate_schema_cache(data_dir)
+            await update.message.reply_text(result)
+        except Exception as e:
+            logger.exception("Sync failed")
+            await update.message.reply_text(f"Sync failed: {e}")
+        return
+
+    # OAuth path: check if we have a stored token
+    from google_auth import load_credentials, oauth_configured, create_auth_url
+
+    if not oauth_configured():
+        await update.message.reply_text(
+            "Google Calendar sync isn't configured yet.\n\n"
+            "You can still upload a .ics or .zip calendar export manually."
+        )
+        return
+
+    creds = load_credentials(data_dir)
+    if creds:
+        # Already authorized — sync directly
+        await update.message.reply_chat_action(ChatAction.TYPING)
+        await update.message.reply_text("Syncing your calendar...")
+        try:
+            from sync import sync_calendar_oauth
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, lambda: sync_calendar_oauth(data_dir, creds)
+            )
+            invalidate_schema_cache(data_dir)
+
+            users = load_users()
+            users[str(user_id)]["status"] = "ready"
+            save_users(users)
+
+            await update.message.reply_text(result)
+        except Exception as e:
+            logger.exception("OAuth sync failed")
+            await update.message.reply_text(f"Sync failed: {e}")
+    else:
+        # No token yet — send OAuth link
+        try:
+            chat_id = update.effective_chat.id
+            auth_url = create_auth_url(user_id, chat_id)
+            await update.message.reply_text(
+                "To sync your Google Calendar, I need to connect to your Google account.\n\n"
+                f"Click this link to authorize:\n{auth_url}\n\n"
+                "The link expires in 10 minutes."
+            )
+        except Exception as e:
+            logger.exception("Failed to create OAuth URL")
+            await update.message.reply_text(f"Error: {e}")
 
 
 async def cmd_process(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Run ETL pipeline on user's uploaded calendar data."""
     user_id = update.effective_user.id
-    user = _get_user(user_id)
+    user = get_user(user_id)
 
     if not user:
         await update.message.reply_text("Please /register first!")
         return
 
-    data_dir = _get_user_data_dir(user_id)
+    data_dir = get_user_data_dir(user_id)
     csv_path = os.path.join(data_dir, "calendar_raw_full.csv")
 
     if not os.path.exists(csv_path):
@@ -288,9 +313,9 @@ async def cmd_process(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     # Update status
-    users = _load_users()
+    users = load_users()
     users[str(user_id)]["status"] = "processing"
-    _save_users(users)
+    save_users(users)
 
     await update.message.reply_text(
         "Starting data processing... This may take several minutes.\n"
@@ -307,17 +332,17 @@ async def cmd_process(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         # Invalidate caches so next query sees the new data
         invalidate_schema_cache(data_dir)
 
-        users = _load_users()
+        users = load_users()
         users[str(user_id)]["status"] = "ready"
-        _save_users(users)
+        save_users(users)
 
         await _send_long(update, f"{result}\n\nAsk me anything about your calendar!")
 
     except Exception as e:
-        users = _load_users()
+        users = load_users()
         users[str(user_id)]["status"] = "error"
         users[str(user_id)]["error"] = str(e)
-        _save_users(users)
+        save_users(users)
 
         logger.exception("ETL failed")
         await update.message.reply_text(f"Processing failed: {e}")
@@ -330,7 +355,7 @@ async def cmd_process(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle uploaded .ics or .zip calendar export files."""
     user_id = update.effective_user.id
-    user = _get_user(user_id)
+    user = get_user(user_id)
 
     if not user:
         await update.message.reply_text("Please /register first!")
@@ -373,16 +398,16 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     # Save as CSV in user's data directory
-    data_dir = _get_user_data_dir(user_id)
+    data_dir = get_user_data_dir(user_id)
     os.makedirs(data_dir, exist_ok=True)
     csv_path = os.path.join(data_dir, "calendar_raw_full.csv")
     events_to_csv(events, csv_path)
 
     # Update user status
-    users = _load_users()
+    users = load_users()
     users[str(user_id)]["status"] = "data_uploaded"
     users[str(user_id)]["event_count"] = len(events)
-    _save_users(users)
+    save_users(users)
 
     await update.message.reply_text(
         f"Calendar data received! {len(events):,} events found.\n\n"
@@ -397,7 +422,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
-    user = _get_user(user_id)
+    user = get_user(user_id)
 
     if not user:
         await update.message.reply_text(
@@ -420,7 +445,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     chat_id = update.effective_chat.id
     question = update.message.text
-    data_dir = _get_user_data_dir(user_id)
+    data_dir = get_user_data_dir(user_id)
 
     # Show "typing..." while processing
     await update.message.reply_chat_action(ChatAction.TYPING)
@@ -440,6 +465,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # Main
 # ──────────────────────────────────────────────
 
+def _start_web_server():
+    """Start uvicorn in a daemon thread for the OAuth callback endpoint."""
+    import threading
+    import uvicorn
+    from api import app as web_app
+
+    port = int(os.getenv("PORT", "8000"))
+    logger.info(f"Starting OAuth callback server on port {port}")
+    threading.Thread(
+        target=uvicorn.run,
+        args=(web_app,),
+        kwargs={"host": "0.0.0.0", "port": port, "log_level": "warning"},
+        daemon=True,
+    ).start()
+
+
 def main():
     if not TELEGRAM_BOT_TOKEN:
         print("Error: TELEGRAM_BOT_TOKEN not set in .env")
@@ -449,9 +490,16 @@ def main():
         return
 
     # Auto-register admin user
-    _ensure_admin_registered()
+    ensure_admin_registered()
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+
+    # Start the web server for OAuth callbacks (only if OAuth is configured)
+    from google_auth import oauth_configured
+    if oauth_configured():
+        from api import set_telegram_bot
+        set_telegram_bot(app.bot)
+        _start_web_server()
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("register", cmd_register))

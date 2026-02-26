@@ -13,3 +13,4 @@ project-notes.md
 .claude/
 __pycache__/
 instructions.md
+google_token.json
