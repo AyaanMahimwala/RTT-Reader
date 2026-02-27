@@ -8,8 +8,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY agent.py api.py db.py etl.py sync.py telegram_bot.py \
-     data_extract.py data-extract.py seed.py ./
+     data_extract.py data-extract.py seed.py \
+     google_auth.py user_registry.py ics_parser.py ./
 COPY taxonomy.json ./
 COPY static/ ./static/
+
+EXPOSE ${PORT:-8000}
 
 CMD ["sh", "-c", "python seed.py && python telegram_bot.py"]

@@ -5,11 +5,15 @@ Two-pass enrichment:
   Pass 1: Category discovery — LLM freely tags events, then consolidates into taxonomy
   Pass 2: Full structured extraction using discovered taxonomy
   Pass 3: Embed sub-activities into LanceDB for semantic search
+
+All functions accept an optional `data_dir` parameter for multi-user support.
+When data_dir is None, the default DATA_DIR is used (backward compatible).
 """
 
 import csv
 import json
 import os
+import shutil
 import sqlite3
 import time
 from datetime import datetime
@@ -44,14 +48,15 @@ openai_client = OpenAI(api_key=OPENAI_API_KEY)
 # CSV Reading + Basic Parsing
 # ──────────────────────────────────────────────
 
-def read_csv():
+def read_csv(data_dir=None):
     """Read calendar_raw_full.csv and return list of dicts."""
+    csv_file = os.path.join(data_dir, "calendar_raw_full.csv") if data_dir else CSV_FILE
     events = []
-    with open(CSV_FILE, newline="", encoding="utf-8") as f:
+    with open(csv_file, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             events.append(row)
-    print(f"Read {len(events)} events from {CSV_FILE}")
+    print(f"Read {len(events)} events from {csv_file}")
     return events
 
 
@@ -145,9 +150,10 @@ Events:
                 return {ev["event_id"]: [] for ev in batch}
 
 
-def run_pass1_discovery(events):
+def run_pass1_discovery(events, data_dir=None):
     """Pass 1: Discover categories by tagging all events."""
-    cache = load_cache(DISCOVERY_CACHE)
+    discovery_cache_file = os.path.join(data_dir, "discovery_cache.json") if data_dir else DISCOVERY_CACHE
+    cache = load_cache(discovery_cache_file)
     batch_size = 50
     total_batches = (len(events) + batch_size - 1) // batch_size
 
@@ -169,7 +175,7 @@ def run_pass1_discovery(events):
         print(f"  Batch {batch_num}/{total_batches} ({len(uncached)} new events)...", end=" ", flush=True)
         result = run_discovery_batch(uncached)
         cache.update(result)
-        save_cache(DISCOVERY_CACHE, cache)
+        save_cache(discovery_cache_file, cache)
         processed += len(batch)
         print(f"done ({processed}/{len(events)})")
 
@@ -180,8 +186,10 @@ def run_pass1_discovery(events):
     return cache
 
 
-def consolidate_taxonomy(discovery_tags):
+def consolidate_taxonomy(discovery_tags, data_dir=None):
     """Take all raw tags and ask Claude to create a clean taxonomy."""
+    taxonomy_file = os.path.join(data_dir, "taxonomy.json") if data_dir else TAXONOMY_FILE
+
     # Count tag frequencies
     tag_counts = {}
     for tags in discovery_tags.values():
@@ -195,7 +203,7 @@ def consolidate_taxonomy(discovery_tags):
 
     tags_text = "\n".join(f"  {tag}: {count}" for tag, count in top_tags)
 
-    prompt = f"""Here are all activity tags found across 8,224 calendar events from a personal time-tracking calendar, with frequencies:
+    prompt = f"""Here are all activity tags found across personal calendar events from a time-tracking calendar, with frequencies:
 
 {tags_text}
 
@@ -232,7 +240,7 @@ Return ONLY valid JSON in this format:
         text = text.strip()
 
     taxonomy = json.loads(text)
-    save_cache(TAXONOMY_FILE, taxonomy)
+    save_cache(taxonomy_file, taxonomy)
     print(f"Taxonomy saved: {len(taxonomy['categories'])} categories")
     for cat in taxonomy["categories"]:
         print(f"  - {cat['name']}: {cat['description']} ({len(cat['raw_tags'])} tags)")
@@ -341,9 +349,10 @@ Events:
                 ]
 
 
-def run_pass2_enrichment(events, taxonomy):
+def run_pass2_enrichment(events, taxonomy, data_dir=None):
     """Pass 2: Full structured enrichment using the discovered taxonomy."""
-    cache = load_cache(ENRICHMENT_CACHE)
+    enrichment_cache_file = os.path.join(data_dir, "enrichment_cache.json") if data_dir else ENRICHMENT_CACHE
+    cache = load_cache(enrichment_cache_file)
     system_context = build_enrichment_prompt(taxonomy)
     batch_size = 20
     total_batches = (len(events) + batch_size - 1) // batch_size
@@ -372,7 +381,7 @@ def run_pass2_enrichment(events, taxonomy):
             if eid:
                 cache[eid] = result
 
-        save_cache(ENRICHMENT_CACHE, cache)
+        save_cache(enrichment_cache_file, cache)
         processed += len(batch)
         print(f"done ({processed}/{len(events)})")
 
@@ -386,12 +395,14 @@ def run_pass2_enrichment(events, taxonomy):
 # SQLite Loading
 # ──────────────────────────────────────────────
 
-def create_database(events, enrichment_cache):
+def create_database(events, enrichment_cache, data_dir=None):
     """Create SQLite database from events + enrichment data."""
-    if os.path.exists(DB_FILE):
-        os.remove(DB_FILE)
+    db_file = os.path.join(data_dir, "calendar.db") if data_dir else DB_FILE
 
-    conn = sqlite3.connect(DB_FILE)
+    if os.path.exists(db_file):
+        os.remove(db_file)
+
+    conn = sqlite3.connect(db_file)
     c = conn.cursor()
 
     # Create tables
@@ -438,7 +449,7 @@ def create_database(events, enrichment_cache):
         )
     """)
 
-    print(f"\nLoading {len(events)} events into {DB_FILE}...")
+    print(f"\nLoading {len(events)} events into {db_file}...")
 
     for event in events:
         eid = event["event_id"]
@@ -524,12 +535,13 @@ def create_database(events, enrichment_cache):
     conn.close()
 
 
-def upsert_events(events, enrichment_cache, event_ids):
+def upsert_events(events, enrichment_cache, event_ids, data_dir=None):
     """Insert new events into existing SQLite database (no drop/recreate).
 
     Only processes events whose event_id is in event_ids.
     """
-    conn = sqlite3.connect(DB_FILE)
+    db_file = os.path.join(data_dir, "calendar.db") if data_dir else DB_FILE
+    conn = sqlite3.connect(db_file)
     c = conn.cursor()
 
     inserted = 0
@@ -596,7 +608,7 @@ def upsert_events(events, enrichment_cache, event_ids):
 
     conn.commit()
     conn.close()
-    print(f"Upserted {inserted} events into {DB_FILE}")
+    print(f"Upserted {inserted} events into {db_file}")
     return inserted
 
 
@@ -691,8 +703,10 @@ def embed_batch(texts):
     return [item.embedding for item in response.data]
 
 
-def create_vector_store(events, enrichment_cache):
+def create_vector_store(events, enrichment_cache, data_dir=None):
     """Create LanceDB vector store from enriched sub-activities."""
+    vector_dir = os.path.join(data_dir, "calendar_vectors") if data_dir else VECTOR_DIR
+
     print(f"\n{'='*60}")
     print("PASS 3: Vector Store Creation (LanceDB)")
     print(f"{'='*60}")
@@ -758,7 +772,7 @@ def create_vector_store(events, enrichment_cache):
         record["vector"] = vector
 
     # Create LanceDB table
-    db = lancedb.connect(VECTOR_DIR)
+    db = lancedb.connect(vector_dir)
 
     # Drop existing table if present
     existing_tables = db.table_names()
@@ -767,15 +781,17 @@ def create_vector_store(events, enrichment_cache):
 
     table = db.create_table("sub_activities", records)
 
-    print(f"\n  Vector store created: {VECTOR_DIR}/")
+    print(f"\n  Vector store created: {vector_dir}/")
     print(f"  Table: sub_activities ({len(records)} rows, {len(all_vectors[0])} dimensions)")
 
 
-def upsert_vectors(events, enrichment_cache, event_ids):
+def upsert_vectors(events, enrichment_cache, event_ids, data_dir=None):
     """Embed and append new sub-activities to existing LanceDB table.
 
     Only processes events whose event_id is in event_ids.
     """
+    vector_dir = os.path.join(data_dir, "calendar_vectors") if data_dir else VECTOR_DIR
+
     # Build records for new events only
     records = []
     for event in events:
@@ -843,7 +859,7 @@ def upsert_vectors(events, enrichment_cache, event_ids):
         record["vector"] = vector
 
     # Append to existing LanceDB table
-    db = lancedb.connect(VECTOR_DIR)
+    db = lancedb.connect(vector_dir)
     table = db.open_table("sub_activities")
     table.add(records)
 
@@ -852,7 +868,74 @@ def upsert_vectors(events, enrichment_cache, event_ids):
 
 
 # ──────────────────────────────────────────────
-# Main
+# Multi-User ETL Entry Point
+# ──────────────────────────────────────────────
+
+def run_etl(data_dir):
+    """Run full ETL pipeline for a user's data directory.
+
+    Expects {data_dir}/calendar_raw_full.csv to exist.
+    Creates: calendar.db, calendar_vectors/, taxonomy.json, and cache files.
+
+    Returns a human-readable status string.
+    """
+    start_time = time.time()
+
+    # 1. Read CSV
+    events = read_csv(data_dir)
+
+    # 2. Pass 1: Discovery
+    discovery_tags = run_pass1_discovery(events, data_dir)
+
+    # 3. Taxonomy — reuse admin's if available, otherwise generate
+    taxonomy_file = os.path.join(data_dir, "taxonomy.json")
+    if os.path.exists(taxonomy_file):
+        print(f"\nUsing existing taxonomy from {taxonomy_file}")
+        with open(taxonomy_file) as f:
+            taxonomy = json.load(f)
+    else:
+        # Try to copy admin's taxonomy (saves a Sonnet API call)
+        admin_taxonomy = os.path.join(_DATA_DIR, "taxonomy.json")
+        if os.path.exists(admin_taxonomy):
+            shutil.copy2(admin_taxonomy, taxonomy_file)
+            print(f"\nCopied admin taxonomy to {taxonomy_file}")
+            with open(taxonomy_file) as f:
+                taxonomy = json.load(f)
+        else:
+            taxonomy = consolidate_taxonomy(discovery_tags, data_dir)
+
+    for cat in taxonomy["categories"]:
+        print(f"  - {cat['name']}: {cat['description']}")
+
+    # 4. Pass 2: Enrichment
+    enrichment_cache = run_pass2_enrichment(events, taxonomy, data_dir)
+
+    # 5. Load into SQLite
+    create_database(events, enrichment_cache, data_dir)
+
+    # 6. Build vector store
+    create_vector_store(events, enrichment_cache, data_dir)
+
+    elapsed = time.time() - start_time
+
+    # Collect stats
+    db_file = os.path.join(data_dir, "calendar.db")
+    conn = sqlite3.connect(db_file)
+    event_count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    sub_count = conn.execute("SELECT COUNT(*) FROM sub_activities").fetchone()[0]
+    people_count = conn.execute("SELECT COUNT(DISTINCT person) FROM event_people").fetchone()[0]
+    conn.close()
+
+    return (
+        f"Processing complete! ({elapsed/60:.1f} minutes)\n\n"
+        f"Events: {event_count}\n"
+        f"Sub-activities: {sub_count}\n"
+        f"Unique people: {people_count}"
+    )
+
+
+# ──────────────────────────────────────────────
+# Main (backward compatible — uses default DATA_DIR)
 # ──────────────────────────────────────────────
 
 def main():
