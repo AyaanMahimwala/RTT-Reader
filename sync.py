@@ -1,14 +1,10 @@
 """
-Lightweight on-demand calendar sync.
+Lightweight on-demand calendar sync via OAuth.
 
 Fetches only recent events from Google Calendar, diffs against the existing DB,
 enriches new events, and upserts into SQLite + LanceDB.
 
-Supports two modes:
-  - Service account sync (admin, via sync_calendar)
-  - OAuth sync (per-user, via sync_calendar_oauth)
-
-Accepts an optional data_dir parameter for multi-user support.
+All users authenticate via OAuth (sync_calendar_oauth).
 """
 
 import csv
@@ -186,28 +182,8 @@ def _first_time_sync(raw_events: list[dict], data_dir: str) -> str:
 # Public API
 # ──────────────────────────────────────────────
 
-def sync_calendar(data_dir=None) -> str:
-    """Service-account sync (admin). Fetches recent events and upserts new ones.
-
-    Returns a human-readable status message.
-    """
-    from data_extract import get_raw_calendar_data
-
-    d = data_dir or _DATA_DIR
-
-    tz_name = os.getenv("YOUR_TIMEZONE", "America/Los_Angeles")
-    today = datetime.now(ZoneInfo(tz_name)).date()
-    sync_from = (today - timedelta(days=7)).isoformat()
-    print(f"Syncing from {sync_from} (7 days back from {today})")
-
-    raw_events = get_raw_calendar_data(sync_from)
-    print(f"Fetched {len(raw_events)} events from Google Calendar since {sync_from}")
-
-    return _sync_events(raw_events, d)
-
-
 def sync_calendar_oauth(data_dir: str, credentials, calendar_id: str = "primary") -> str:
-    """OAuth-based sync for non-admin users.
+    """OAuth-based calendar sync.
 
     If the user has no DB yet, does a full first-time sync (fetches all events).
     Otherwise, incremental sync (last 7 days).
@@ -239,7 +215,3 @@ def sync_calendar_oauth(data_dir: str, credentials, calendar_id: str = "primary"
         return _first_time_sync(raw_events, data_dir)
     else:
         return _sync_events(raw_events, data_dir)
-
-
-if __name__ == "__main__":
-    print(sync_calendar())

@@ -143,7 +143,6 @@ async def cmd_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "name": update.effective_user.first_name or "User",
         "status": "registered",
         "registered_at": datetime.now().isoformat(),
-        "is_admin": False,
     }
     save_users(users)
 
@@ -208,9 +207,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # Show Google Calendar connection status
     from google_auth import oauth_configured, get_token_path
     data_dir = get_user_data_dir(update.effective_user.id)
-    if user.get("is_admin") and os.getenv("SERVICE_ACCOUNT_FILE"):
-        msg += "\n\nGoogle Calendar: connected (service account)"
-    elif oauth_configured():
+    if oauth_configured():
         token_path = get_token_path(data_dir)
         if os.path.exists(token_path):
             msg += "\n\nGoogle Calendar: connected (OAuth)"
@@ -232,7 +229,7 @@ async def cmd_new(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Sync calendar data from Google — admin uses service account, others use OAuth."""
+    """Sync calendar data from Google via OAuth."""
     user_id = update.effective_user.id
     user = get_user(user_id)
     if not user:
@@ -241,21 +238,6 @@ async def cmd_sync(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     data_dir = get_user_data_dir(user_id)
 
-    # Admin path: use service account (backward compatible)
-    if user.get("is_admin") and os.getenv("SERVICE_ACCOUNT_FILE"):
-        await update.message.reply_chat_action(ChatAction.TYPING)
-        try:
-            from sync import sync_calendar
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, sync_calendar)
-            invalidate_schema_cache(data_dir)
-            await update.message.reply_text(result)
-        except Exception as e:
-            logger.exception("Sync failed")
-            await update.message.reply_text(f"Sync failed: {e}")
-        return
-
-    # OAuth path: check if we have a stored token
     from google_auth import load_credentials, oauth_configured, create_auth_url
 
     if not oauth_configured():
