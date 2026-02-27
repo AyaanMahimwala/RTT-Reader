@@ -895,7 +895,8 @@ def run_etl(data_dir):
             taxonomy = json.load(f)
     else:
         # Try to copy admin's taxonomy (saves a Sonnet API call)
-        admin_taxonomy = os.path.join(_DATA_DIR, "taxonomy.json")
+        from user_registry import ADMIN_USER_ID as _ADMIN_ID, get_user_data_dir as _get_udir
+        admin_taxonomy = os.path.join(_get_udir(_ADMIN_ID), "taxonomy.json")
         if os.path.exists(admin_taxonomy):
             shutil.copy2(admin_taxonomy, taxonomy_file)
             print(f"\nCopied admin taxonomy to {taxonomy_file}")
