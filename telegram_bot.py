@@ -147,16 +147,27 @@ async def cmd_register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     }
     save_users(users)
 
-    await update.message.reply_text(
-        "You're registered! Here's how to get your calendar data:\n\n"
-        "1. Open Google Calendar (calendar.google.com)\n"
-        "2. Click the gear icon (Settings)\n"
-        "3. Go to 'Import & Export' in the left sidebar\n"
-        "4. Click 'Export' — this downloads a .zip file\n"
-        "5. Send me that .zip file right here in this chat\n"
-        "6. Then send /process to analyze your data\n\n"
-        "That's it! The whole process takes about 5 minutes."
-    )
+    # Auto-trigger OAuth flow if configured
+    from google_auth import oauth_configured, create_auth_url
+
+    if oauth_configured():
+        try:
+            chat_id = update.effective_chat.id
+            auth_url = create_auth_url(user_id, chat_id)
+            await update.message.reply_text(
+                "You're registered! Let's connect your Google Calendar.\n\n"
+                f"Click this link to authorize:\n{auth_url}\n\n"
+                "Once you approve, I'll automatically sync your calendar data."
+            )
+        except Exception as e:
+            logger.exception("Failed to create OAuth URL during registration")
+            await update.message.reply_text(
+                "You're registered! Send /sync to connect your Google Calendar."
+            )
+    else:
+        await update.message.reply_text(
+            "You're registered! Send /sync to connect your Google Calendar."
+        )
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -170,8 +181,8 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     status_messages = {
         "registered": (
-            f"Hi {name}! You're registered but haven't uploaded calendar data yet.\n\n"
-            "Next step: Export your Google Calendar and send me the .zip or .ics file."
+            f"Hi {name}! You're registered but haven't connected your calendar yet.\n\n"
+            "Next step: Send /sync to connect your Google Calendar."
         ),
         "data_uploaded": (
             f"Hi {name}! Your calendar data is uploaded "
@@ -184,12 +195,12 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         ),
         "ready": (
             f"Hi {name}! Your data is ready. Ask me anything about your calendar!\n\n"
-            "You can also upload a new .zip/.ics file or /sync to update your data."
+            "Use /sync to update your calendar data."
         ),
         "error": (
             f"Hi {name}! There was an error processing your data.\n"
             f"Error: {user.get('error', 'Unknown')}\n\n"
-            "Try uploading your calendar file again, then send /process."
+            "Try /sync to reconnect your calendar, or contact support."
         ),
     }
     msg = status_messages.get(status, f"Status: {status}")
@@ -433,10 +444,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     status = user.get("status", "registered")
     if status != "ready":
         status_hints = {
-            "registered": "Please upload your calendar data first (.ics or .zip file).",
+            "registered": "Please connect your Google Calendar first — send /sync.",
             "data_uploaded": "Your data is uploaded. Send /process to analyze it.",
             "processing": "Your data is still being processed. Please wait...",
-            "error": "There was an error processing your data. Try uploading again or send /process to retry.",
+            "error": "There was an error processing your data. Try /sync to reconnect your calendar, or send /process to retry.",
         }
         await update.message.reply_text(
             status_hints.get(status, "Something went wrong. Try /status for details.")
