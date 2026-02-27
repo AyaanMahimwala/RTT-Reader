@@ -41,9 +41,13 @@ def get_user_data_dir(user_id: int) -> str:
 def _migrate_admin_data():
     """One-time migration: move legacy root data files to data/users/<ADMIN_USER_ID>/."""
     user_dir = get_user_data_dir(ADMIN_USER_ID)
+    print(f"[migration] Checking migration for admin {ADMIN_USER_ID}")
+    print(f"[migration] Root data dir: {_DATA_DIR}")
+    print(f"[migration] Target user dir: {user_dir}")
 
     # Only migrate if the user dir is empty/missing and root files exist
     if os.path.exists(user_dir) and os.listdir(user_dir):
+        print(f"[migration] SKIP — user dir already exists with contents: {os.listdir(user_dir)}")
         return False
 
     files_to_move = [
@@ -57,10 +61,17 @@ def _migrate_admin_data():
     ]
     dirs_to_move = ["calendar_vectors"]
 
+    # Log what exists at root
+    for name in files_to_move + dirs_to_move:
+        src = os.path.join(_DATA_DIR, name)
+        exists = os.path.exists(src)
+        print(f"[migration]   {name}: {'FOUND' if exists else 'not found'}")
+
     has_anything = any(
         os.path.exists(os.path.join(_DATA_DIR, f)) for f in files_to_move + dirs_to_move
     )
     if not has_anything:
+        print("[migration] SKIP — no root files to migrate")
         return False
 
     os.makedirs(user_dir, exist_ok=True)
@@ -78,8 +89,10 @@ def _migrate_admin_data():
             shutil.move(src, os.path.join(user_dir, name))
             migrated.append(name + "/")
 
-    if migrated:
-        print(f"Migrated admin data to {user_dir}: {', '.join(migrated)}")
+    print(f"[migration] DONE — moved to {user_dir}: {', '.join(migrated)}")
+
+    # Log final state of user dir
+    print(f"[migration] User dir contents: {os.listdir(user_dir)}")
 
     return True
 
@@ -88,6 +101,7 @@ def ensure_admin_registered():
     """Auto-register admin user on startup (needs OAuth sync like everyone else)."""
     users = load_users()
     admin_key = str(ADMIN_USER_ID)
+    print(f"[admin-reg] Admin key: {admin_key}, already registered: {admin_key in users}")
 
     # Migrate legacy root data files on first run
     migrated = _migrate_admin_data()
@@ -98,6 +112,7 @@ def ensure_admin_registered():
         has_db = os.path.exists(os.path.join(user_dir, "calendar_events.db")) or \
                  os.path.exists(os.path.join(user_dir, "calendar.db"))
         status = "ready" if has_db else "registered"
+        print(f"[admin-reg] New registration — has_db={has_db}, status={status}")
 
         users[admin_key] = {
             "name": "Admin",
@@ -110,6 +125,9 @@ def ensure_admin_registered():
         user_dir = get_user_data_dir(ADMIN_USER_ID)
         has_db = os.path.exists(os.path.join(user_dir, "calendar_events.db")) or \
                  os.path.exists(os.path.join(user_dir, "calendar.db"))
+        print(f"[admin-reg] Already registered + migrated — has_db={has_db}, current status={users[admin_key].get('status')}")
         if has_db and users[admin_key].get("status") != "ready":
             users[admin_key]["status"] = "ready"
             save_users(users)
+    else:
+        print(f"[admin-reg] Already registered, no migration — status={users[admin_key].get('status')}")
