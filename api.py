@@ -1,7 +1,7 @@
 """
 FastAPI server — thin wrapper around the shared agent in agent.py.
 
-Also hosts the /oauth/callback endpoint for per-user Google Calendar OAuth.
+Also hosts the /auth/callback endpoint for per-user Google Calendar OAuth.
 
 Usage:
     uvicorn api:app --reload
@@ -82,7 +82,7 @@ async def health():
 # OAuth callback
 # ──────────────────────────────────────────────
 
-@app.get("/oauth/callback")
+@app.get("/auth/callback")
 async def oauth_callback(request: Request):
     """Handle Google OAuth redirect after user grants calendar access."""
     from google_auth import exchange_code, save_credentials
