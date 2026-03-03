@@ -8,6 +8,7 @@ When data_dir is None, the default DATA_DIR is used (backward compatible).
 """
 
 import json
+import logging
 import os
 import time
 import uuid
@@ -22,10 +23,41 @@ from db import TOOLS, execute_tool, get_schema, list_memories, get_data_stats
 
 load_dotenv()
 
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 SONNET_MODEL = "claude-sonnet-4-20250514"
 
-client = Anthropic(api_key=ANTHROPIC_API_KEY)
+logger = logging.getLogger(__name__)
+
+
+def _resolve_api_keys(user_id) -> tuple[str, str]:
+    """Return (anthropic_key, openai_key) for the given user_id.
+
+    Matches USER_A_ID and USER_B_ID from the environment; all other users fall
+    through to the shared default keys. Per-user keys fall back to the defaults
+    if not explicitly set, so the returned strings are never empty/None.
+    """
+    user_a_id = os.getenv("USER_A_ID")
+    user_b_id = os.getenv("USER_B_ID")
+    uid_str = str(user_id)
+
+    if uid_str == user_a_id:
+        label = "A"
+        anthropic_key = os.getenv("USER_A_ANTHROPIC_KEY")
+        openai_key = os.getenv("USER_A_OPENAI_KEY")
+        if not anthropic_key or not openai_key:
+            raise EnvironmentError(f"USER_A_ANTHROPIC_KEY and USER_A_OPENAI_KEY must be set for user_id={user_id}")
+    elif uid_str == user_b_id:
+        label = "B"
+        anthropic_key = os.getenv("USER_B_ANTHROPIC_KEY")
+        openai_key = os.getenv("USER_B_OPENAI_KEY")
+        if not anthropic_key or not openai_key:
+            raise EnvironmentError(f"USER_B_ANTHROPIC_KEY and USER_B_OPENAI_KEY must be set for user_id={user_id}")
+    else:
+        label = "Default"
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+        openai_key = os.getenv("OPENAI_API_KEY")
+
+    logger.info("Directing request to user %s keys (user_id=%s)", label, user_id)
+    return anthropic_key, openai_key
 
 # Per-user schema cache: data_dir (or None) → schema text
 _schema_cache: Dict[Optional[str], str] = {}
@@ -218,13 +250,22 @@ def _build_system_prompt(data_dir=None):
 # Core Agent Loop
 # ──────────────────────────────────────────────
 
-def run_agent(question: str, session_id: Optional[str] = None, data_dir: Optional[str] = None) -> dict:
+def run_agent(
+    question: str,
+    session_id: Optional[str] = None,
+    data_dir: Optional[str] = None,
+    user_id=None,
+) -> dict:
     """Run the agent tool-use loop and return structured result.
 
     Returns {"answer": str, "sql_queries": list, "data": list, "session_id": str}
     """
     sql_queries = []
     all_data = []
+
+    # Resolve per-user API keys and create the Anthropic client for this request
+    anthropic_key, openai_key = _resolve_api_keys(user_id)
+    anthropic_client = Anthropic(api_key=anthropic_key)
 
     # Get or create session
     session_id, session_messages = _get_or_create_session(session_id)
@@ -242,7 +283,7 @@ def run_agent(question: str, session_id: Optional[str] = None, data_dir: Optiona
     # Tool use loop — Claude can call tools iteratively
     max_iterations = 10
     for _ in range(max_iterations):
-        response = client.messages.create(
+        response = anthropic_client.messages.create(
             model=SONNET_MODEL,
             max_tokens=4096,
             system=system,
@@ -265,9 +306,9 @@ def run_agent(question: str, session_id: Optional[str] = None, data_dir: Optiona
                     if tool_name == "run_sql" and "query" in tool_input:
                         sql_queries.append(tool_input["query"])
 
-                    # Execute the tool with user-specific data_dir
+                    # Execute the tool with user-specific data_dir and openai_key
                     try:
-                        result = execute_tool(tool_name, tool_input, data_dir=data_dir)
+                        result = execute_tool(tool_name, tool_input, data_dir=data_dir, openai_key=openai_key)
                         # Track data from SQL queries
                         if tool_name == "run_sql":
                             try:

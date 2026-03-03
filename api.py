@@ -43,6 +43,7 @@ def set_telegram_bot(bot):
 class QueryRequest(BaseModel):
     question: str
     session_id: Optional[str] = None
+    user_id: Optional[str] = None
 
 
 class QueryResponse(BaseModel):
@@ -55,7 +56,7 @@ class QueryResponse(BaseModel):
 @app.post("/query", response_model=QueryResponse)
 async def query_calendar(request: QueryRequest):
     """Answer a natural language question about the calendar data."""
-    result = run_agent(request.question, request.session_id)
+    result = run_agent(request.question, request.session_id, user_id=request.user_id)
     return QueryResponse(**result)
 
 

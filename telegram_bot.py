@@ -453,7 +453,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     session_id = _chat_sessions.get(chat_id)
 
     try:
-        result = run_agent(question, session_id, data_dir=data_dir)
+        result = run_agent(question, session_id, data_dir=data_dir, user_id=user_id)
         _chat_sessions[chat_id] = result["session_id"]
         await _send_long(update, result["answer"])
     except Exception as e:

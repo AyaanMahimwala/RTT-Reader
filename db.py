@@ -66,9 +66,10 @@ def invalidate_vector_cache(data_dir=None):
     _vector_tables.pop(vdir, None)
 
 
-def _embed_query(text):
-    """Embed a single query string."""
-    response = _get_openai().embeddings.create(model=EMBEDDING_MODEL, input=[text])
+def _embed_query(text, openai_key: str):
+    """Embed a single query string using the provided OpenAI key."""
+    client = OpenAI(api_key=openai_key)
+    response = client.embeddings.create(model=EMBEDDING_MODEL, input=[text])
     return response.data[0].embedding
 
 
@@ -180,10 +181,10 @@ def get_people_frequency(data_dir=None):
 # Vector Search Functions
 # ──────────────────────────────────────────────
 
-def semantic_search(query, n=20, filters=None, data_dir=None):
+def semantic_search(query, n=20, filters=None, data_dir=None, openai_key: str = None):
     """Search sub-activities by semantic similarity. Returns top N matches."""
     table = _get_vector_table(data_dir)
-    query_vector = _embed_query(query)
+    query_vector = _embed_query(query, openai_key)
 
     search = table.search(query_vector).limit(n)
 
@@ -573,7 +574,7 @@ TOOLS = [
 ]
 
 
-def execute_tool(tool_name, tool_input, data_dir=None):
+def execute_tool(tool_name, tool_input, data_dir=None, openai_key: str = None):
     """Execute a tool by name and return the result as a string."""
     if tool_name == "run_sql":
         result = run_sql(tool_input["query"], data_dir=data_dir)
@@ -591,6 +592,7 @@ def execute_tool(tool_name, tool_input, data_dir=None):
             tool_input.get("n", 20),
             tool_input.get("filters"),
             data_dir=data_dir,
+            openai_key=openai_key,
         )
     elif tool_name == "find_similar_events":
         result = find_similar_events(
