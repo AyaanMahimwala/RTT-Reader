@@ -13,6 +13,4 @@ COPY agent.py api.py db.py etl.py sync.py telegram_bot.py \
 COPY taxonomy.json ./
 COPY static/ ./static/
 
-EXPOSE ${PORT:-8000}
-
-CMD ["sh", "-c", "python seed.py && python telegram_bot.py"]
+CMD uvicorn api:app --host 0.0.0.0 --port $PORT

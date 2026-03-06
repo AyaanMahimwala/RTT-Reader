@@ -1,7 +1,9 @@
 """
 Multi-user Telegram bot interface for the calendar analytics agent.
 
-Uses long-polling (no public URL / webhooks needed).
+Supports two modes:
+  - Polling mode (local dev): python telegram_bot.py
+  - Webhook mode (production): api.py imports create_webhook_application()
 
 Users:
   - /register to create an account
@@ -12,11 +14,13 @@ Users:
 Admin user (TELEGRAM_USER_ID) is auto-registered with existing data.
 
 Usage:
-    python telegram_bot.py
+    python telegram_bot.py          # local dev (polling)
+    uvicorn api:app --port 8000     # production (webhook via api.py)
 
 Environment variables (.env):
     TELEGRAM_BOT_TOKEN  — from @BotFather
     TELEGRAM_USER_ID    — admin's numeric Telegram user ID (from @userinfobot)
+    WEBHOOK_URL         — (production only) e.g. https://example.up.railway.app/telegram-webhook
 """
 
 import asyncio
@@ -455,7 +459,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 # ──────────────────────────────────────────────
-# Main
+# Handler registration (shared between polling & webhook modes)
+# ──────────────────────────────────────────────
+
+def _register_handlers(app):
+    """Register all Telegram handlers on the given Application."""
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("register", cmd_register))
+    app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("new", cmd_new))
+    app.add_handler(CommandHandler("sync", cmd_sync))
+    app.add_handler(CommandHandler("process", cmd_process))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+
+def create_webhook_application():
+    """Create Telegram Application in webhook mode (no polling updater).
+
+    Used by api.py when running under Uvicorn in production.
+    """
+    ptb = (
+        ApplicationBuilder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .updater(None)
+        .build()
+    )
+    _register_handlers(ptb)
+    return ptb
+
+
+# ──────────────────────────────────────────────
+# Main — local dev polling mode
 # ──────────────────────────────────────────────
 
 def _start_web_server():
@@ -486,6 +521,7 @@ def main():
     ensure_admin_registered()
 
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    _register_handlers(app)
 
     # Start the web server for OAuth callbacks (only if OAuth is configured)
     from google_auth import oauth_configured
@@ -493,15 +529,6 @@ def main():
         from api import set_telegram_bot
         set_telegram_bot(app.bot)
         _start_web_server()
-
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("register", cmd_register))
-    app.add_handler(CommandHandler("status", cmd_status))
-    app.add_handler(CommandHandler("new", cmd_new))
-    app.add_handler(CommandHandler("sync", cmd_sync))
-    app.add_handler(CommandHandler("process", cmd_process))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("Bot starting in polling mode (multi-user)...")
     app.run_polling()
