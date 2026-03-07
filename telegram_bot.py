@@ -453,6 +453,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         result = run_agent(question, session_id, data_dir=data_dir)
         _chat_sessions[chat_id] = result["session_id"]
         await _send_long(update, result["answer"])
+
+        # Increment message counter
+        users = load_users()
+        uid = str(user_id)
+        if uid in users:
+            users[uid]["message_count"] = users[uid].get("message_count", 0) + 1
+            save_users(users)
     except Exception as e:
         logger.exception("Agent error")
         await update.message.reply_text(f"Error: {e}")
