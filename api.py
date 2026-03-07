@@ -242,6 +242,99 @@ async def oauth_callback(request: Request):
     )
 
 
+# ──────────────────────────────────────────────
+# Admin dashboard routes
+# ──────────────────────────────────────────────
+
+def _admin_redirect_uri() -> str:
+    """Build the admin OAuth callback URI from OAUTH_REDIRECT_URI base."""
+    base_uri = os.getenv("OAUTH_REDIRECT_URI", "")
+    # Derive base URL from existing OAuth redirect URI (e.g. https://host/auth/callback → https://host)
+    base = base_uri.rsplit("/", 2)[0] if "/" in base_uri else base_uri
+    return f"{base}/admin/auth/callback"
+
+
+@app.get("/admin/login")
+async def admin_login(request: Request):
+    from admin_auth import validate_session_cookie
+
+    cookie = request.cookies.get("admin_session")
+    if cookie and validate_session_cookie(cookie):
+        return RedirectResponse(url="/admin")
+
+    from admin_dashboard import render_login_page
+    return HTMLResponse(render_login_page())
+
+
+@app.get("/admin/login/start")
+async def admin_login_start(request: Request):
+    from admin_auth import create_admin_auth_url
+
+    redirect_uri = _admin_redirect_uri()
+    auth_url, _nonce = create_admin_auth_url(redirect_uri)
+    return RedirectResponse(auth_url)
+
+
+@app.get("/admin/auth/callback")
+async def admin_auth_callback(request: Request):
+    from admin_auth import exchange_admin_code, create_session_cookie
+    from admin_dashboard import render_error_page
+
+    code = request.query_params.get("code")
+    state = request.query_params.get("state")
+    error = request.query_params.get("error")
+
+    if error:
+        return HTMLResponse(render_error_page(f"Google returned: {error}"), status_code=400)
+
+    if not code or not state:
+        return HTMLResponse(render_error_page("Missing parameters. Please try again."), status_code=400)
+
+    redirect_uri = _admin_redirect_uri()
+
+    try:
+        email = exchange_admin_code(code, state, redirect_uri)
+    except ValueError as e:
+        return HTMLResponse(render_error_page(str(e)), status_code=403)
+
+    cookie = create_session_cookie(email)
+    response = RedirectResponse(url="/admin", status_code=302)
+    is_https = _admin_redirect_uri().startswith("https")
+    response.set_cookie(
+        key="admin_session",
+        value=cookie,
+        httponly=True,
+        secure=is_https,
+        samesite="lax",
+        max_age=86400,
+    )
+    return response
+
+
+@app.get("/admin")
+async def admin_dashboard(request: Request):
+    from admin_auth import validate_session_cookie, get_all_users_stats
+    from admin_dashboard import render_dashboard
+
+    cookie = request.cookies.get("admin_session")
+    if not cookie:
+        return RedirectResponse(url="/admin/login")
+
+    email = validate_session_cookie(cookie)
+    if not email:
+        return RedirectResponse(url="/admin/login")
+
+    stats = get_all_users_stats()
+    return HTMLResponse(render_dashboard(stats, email))
+
+
+@app.post("/admin/logout")
+async def admin_logout():
+    response = RedirectResponse(url="/admin/login", status_code=302)
+    response.delete_cookie("admin_session")
+    return response
+
+
 @app.get("/")
 async def root():
     return RedirectResponse(url="/static/index.html")
