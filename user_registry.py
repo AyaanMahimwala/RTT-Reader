@@ -130,8 +130,4 @@ def ensure_admin_registered():
             users[admin_key]["status"] = "ready"
             save_users(users)
     else:
-        # Fix legacy "Admin" name if the user later registered via Telegram with a real name
-        if users[admin_key].get("name") == "Admin":
-            users[admin_key]["name"] = "Ayaan"
-            save_users(users)
         print(f"[admin-reg] Already registered, no migration — status={users[admin_key].get('status')}")
